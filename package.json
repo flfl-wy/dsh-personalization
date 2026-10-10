@@ -11,7 +11,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "node --test test/agents-file.test.mjs test/client-bundle.test.mjs test/manifest-parity.test.mjs"
+    "test": "node --test test/agents-file.test.mjs test/client-bundle.test.mjs test/client-render.test.mjs test/manifest-parity.test.mjs"
   },
   "dsh": {
     "client": {

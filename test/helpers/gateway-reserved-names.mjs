@@ -27,7 +27,7 @@
  * token)` 冲突，把 `read` / `save` 一起带崩。
  */
 
-import fs from 'node:fs'
+import { DSH_ASAR_PATH, openAsar } from './asar.mjs'
 
 /**
  * 保留名快照。取值方式见 `deriveReservedNamesFromAsar` —— 本机可以从 DSH 自带的真实源码
@@ -44,7 +44,7 @@ export const RESERVED_NAMESPACE_METHODS = new Set([
 ])
 
 /** DSH 的安装位置；不存在时「快照是否过期」那条测试会跳过。 */
-export const DSH_ASAR_PATH = '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar'
+export { DSH_ASAR_PATH }
 
 /**
  * 照抄真实网关的 `assertMethodAvailable`。
@@ -54,28 +54,6 @@ export const DSH_ASAR_PATH = '/Applications/DeepSeek Harness.app/Contents/Resour
 export function assertMethodAvailable(namespace, method) {
     if (RESERVED_NAMESPACE_METHODS.has(method)) {
         throw new Error(`client api: method ${JSON.stringify(`${namespace}/${method}`)} conflicts with its namespace service`)
-    }
-}
-
-/** 打开 asar 并按路径读内部文件。 */
-function openAsar(archive) {
-    const fd = fs.openSync(archive, 'r')
-    const sizeBuf = Buffer.alloc(8)
-    fs.readSync(fd, sizeBuf, 0, 8, 0)
-    const headerSize = sizeBuf.readUInt32LE(4)
-    const headerBuf = Buffer.alloc(headerSize)
-    fs.readSync(fd, headerBuf, 0, headerSize, 8)
-    const header = JSON.parse(headerBuf.toString('utf8', 8, 8 + headerBuf.readUInt32LE(4)))
-    const dataStart = 8 + headerSize
-    return {
-        read(path) {
-            const node = path.split('/').filter(Boolean).reduce((n, seg) => n?.files?.[seg], header)
-            if (node === undefined || node.files !== undefined) throw new Error(`asar 里没有文件 ${path}`)
-            const buf = Buffer.alloc(node.size)
-            fs.readSync(fd, buf, 0, node.size, dataStart + Number(node.offset))
-            return buf.toString('utf8')
-        },
-        close() { fs.closeSync(fd) },
     }
 }
 

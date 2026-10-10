@@ -45,14 +45,34 @@ lib/index.js       宿主半区：TypertRemoteService('personalization') + ctx.t
 lib/agents-file.js 纯文件逻辑：读取 / 备份 / 写入 + 历史版本枚举·读取·回滚·删除（无 DSH 运行时依赖，可单独测试）
 lib/client.js      浏览器半区：window.__ModuleLoader__.load 懒加载 CJS 束，注册 settings.section
 cordis.patch.yml   Bundle patch：把裸包名插入为 Loader 行（客户端半区靠裸包名挂靠）
-test/helpers/      客户端束 vm 装载体 + 命名空间保留名快照与推导
+test/helpers/      客户端束 vm 装载体（含微型 React 运行时）+ 保留名快照与 asar/token 工具
 test/fixtures/     dsh-typert-protocol 测试替身（见 manifest-parity 测试的说明）
-test/              agents-file 往返测试 + 客户端束契约测试 + 跨半区契约测试
+test/              agents-file 往返测试 + 客户端束契约测试 + 设置页渲染测试 + 跨半区契约测试
 ```
 
 两端各持一份描述符清单（宿主 `MANIFEST.invocations` / 客户端 `CONTRIBUTION.descriptors`），字段必须一致。客户端束是手写的，不经构建；它只能 `require` 外壳种子词：`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`。
 
 这份「必须一致」以前只靠人工纪律维持，现在由 `test/manifest-parity.test.mjs` 断言：两半区的端点集合与每个端点的 `id` / `service` / `namespace` / `method` / receiver kind / 参数 `name`·`wire`·`source` / codec `mode`·`typeSymbol` 必须逐字段相同。它同时按 `dsh-typert-loader` 的 `requireInvocation` 规则校验 `MANIFEST`（端点与 id 不得重复 —— 重复会被整批拒绝），并用真实的 `lib/agents-file.js` 返回值去 parse 每个结果 schema。
+
+## 界面风格（第四个坑：token 名写错不会报错）
+
+设置页的外观按 DSH 原生设置页的规范做，依据全部取自运行时自带源码，不是凭印象调的。要改样式前请看下表，它记录了「为什么是这个值」：
+
+| 项 | 取值 | 依据 |
+|---|---|---|
+| 页宽 / 纵向节奏 | `max-width:720px` + `gap:12px` + 纵向 flex | `dsh-client-ui-agent-preset` 的 `.section`；外壳的 `.Dws9Sa_options` 已给 `padding:0 24px 24px` 和自己的滚动，所以**束不能再加宽度、居中或左右内边距**，否则会变成 48px |
+| 页标题 | 18px / 600 | 同上的 `.title`（外壳 header 只放 `settings.action` 与关闭按钮，标题必须由 section 自绘） |
+| 说明文字 | 13px + `--dsw-alias-label-tertiary` | 同上的 `.intro` |
+| 输入控件 | `border:.5px` + `radius-md`(12px) + `bg-layer-1`，聚焦改边框色 | `@deepseek-ai/dsh-client-ui-primitives/lib/Input.module.css` 的 `.wrap` / `.wrap:focus-within` |
+| 卡片（版本行） | `border:.5px` + `radius-md` + `settings-card-fill/stroke` | 原生 `.card` 用 `settings-card-stroke`（= `border-l4`）；发丝边比 1px 更接近原生 |
+| 悬停 / 破坏性 | `interactive-bg-hover` / `state-error-primary` + `interactive-bg-hover-danger` | 前者是原生交互填充；原生 `Button` **没有** danger 变体，破坏性靠颜色而非变体 |
+| 排版 / 圆角 / 代码字体 | `--dsw-font-*` 复合值、`--dsw-radius-*`、`--ds-font-family-code` | `@deepseek-ai/dsh-client-ui-theme/lib/client.js` 的 `base_css_default`（共 408 个 token）。`--dsw-font-xs-13` 这类复合值可直接写在 `font:` 上（原生自己也这么用） |
+| 相对时间 | `relativeTime()` 只给 `{unit,n}` 分桶，措辞留在本插件的字典 | 原生把「数据分桶」与「文案归属」分开；绝对时间仍由 `formatTime()` 提供给「最后修改」 |
+| 体积 | `fileSizeText()` | 原生字节文案（`1.6KB` 这一族） |
+
+**踩过的坑**：CSS 里写错 token 名（例如 `--dsw-alias-label-quaternary`）**不会报错**，`var()` 静默失效、退回继承值 —— 界面照样能渲染，只是不对。所以 `test/client-render.test.mjs` 有一条测试从 asar 里的主题包**重新提取权威 token 名单**，断言束用到的每个 `var(--dsw-*)` / `var(--ds-*)` 都真实存在。
+
+同理，原语（`Button` / `Tag` / `PathLabel` / `relativeTime` / `fileSizeText` / 图标）一个都不能直接 `primitives.X`：束只能拿到种子词导出的名字，名字缺失就是整页白屏。全部经 `pick(name, fallback)` 取，并有一条测试在**原语整个缺席**（`primitives:'none'`）时仍要求整页正常渲染。
 
 ## 依赖设计（关键，改之前先读）
 
@@ -155,16 +175,17 @@ curl -s "http://127.0.0.1:19387/plugins/??dsh-personalization/client.js&rev=<rev
 
 ```sh
 cd ~/Documents/deepseek-harness/dsh-personalization
-pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.test.mjs test/manifest-parity.test.mjs
+pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.test.mjs test/client-render.test.mjs test/manifest-parity.test.mjs
 ```
 
 | 文件 | 项数 | 覆盖 |
 |---|---|---|
 | `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
 | `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
+| `test/client-render.test.mjs` | 10 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的原生结构、时间走 `relativeTime`、体积走 `fileSizeText`、id 走 `Tag`、三个操作按钮带原生图标、**原语整个缺席时仍能渲染**（兜底文案与 `<button>`）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、不写死颜色与字体栈且不重复外壳内边距、类名与样式双向一致（无死样式） |
 | `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
 
-合计 37 项。
+合计 47 项。
 
 两个 helper 支撑上面这些用例：
 
@@ -172,8 +193,10 @@ pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.te
 |---|---|
 | `test/helpers/client-bundle-harness.mjs` | 在隔离 vm 里求值客户端束，并提供**按真实规则校验**的假 `$mount`（保留名、strict codec、端点不重复），任何一条不过都像真网关那样拒绝挂载 |
 | `test/helpers/gateway-reserved-names.mjs` | 命名空间服务保留名快照 + `assertMethodAvailable`，以及从 DSH 的 `app.asar` **重新推导**保留名的函数 |
+| `test/helpers/asar.mjs` | 读 `app.asar` 内单文件的最小工具（`openAsar` / `DSH_ASAR_PATH`），上面两个 helper 共用 |
+| `test/helpers/theme-tokens.mjs` | 从主题包**重新提取**权威设计 token 名单（`themeTokenNames()`）。主题包的 CSS 是 JS 字符串字面量且字体名带转义引号，必须按 JS 字符串规则扫描，简单的 `"[^"]*"` 正则会静默漏掉大量 token |
 
-`manifest-parity` 需要一个 `@deepseek-ai/dsh-typert-protocol` 替身才能 import 宿主半区（真实包 import 了本插件故意不装的 cordis），用 `node:module` 的 `registerHooks` 把该 specifier 重定向到 `test/fixtures/typert-protocol-stub.mjs`。本机没装 DSH 时，「保留名快照与源码一致」那条会自动 skip。
+`manifest-parity` 需要一个 `@deepseek-ai/dsh-typert-protocol` 替身才能 import 宿主半区（真实包 import 了本插件故意不装的 cordis），用 `node:module` 的 `registerHooks` 把该 specifier 重定向到 `test/fixtures/typert-protocol-stub.mjs`。本机没装 DSH 时，「保留名快照与源码一致」与「token 真实存在」这两条会自动 skip。
 
 ## 安装
 
