@@ -55,7 +55,7 @@ tools/visual-preview.mjs  静态视觉预览：用运行时真实 CSS 把设置�
 
 这份「必须一致」以前只靠人工纪律维持，现在由 `test/manifest-parity.test.mjs` 断言：两半区的端点集合与每个端点的 `id` / `service` / `namespace` / `method` / receiver kind / 参数 `name`·`wire`·`source` / codec `mode`·`typeSymbol` 必须逐字段相同。它同时按 `dsh-typert-loader` 的 `requireInvocation` 规则校验 `MANIFEST`（端点与 id 不得重复 —— 重复会被整批拒绝），并用真实的 `lib/agents-file.js` 返回值去 parse 每个结果 schema。
 
-## 界面风格（第四个坑：`size` 覆盖会让按钮不再是原生按钮）
+## 界面风格（第四个坑：不要 require Harness Client 包）
 
 > **2026-10-10 的取舍记录**：先按「对齐原生」重做了一版（18px 标题、720px、`radius-xl` 卡片、`Tag` 胶囊、时间走 `relativeTime`），用户看过之后认为**不好看**，要求回滚到改造之前。于是版式回到 `90bfb9d`，只有**按钮**按要求改成与原生一致。下表是当前实际取值，改之前先看这里。
 
@@ -63,27 +63,43 @@ tools/visual-preview.mjs  静态视觉预览：用运行时真实 CSS 把设置�
 |---|---|---|
 | 版式 | 24px / 600 标题、`width:min(100%,760px)` + `margin:0 auto` | 回滚保留。注意外壳 `.Dws9Sa_options` 已给 `padding:0 24px 24px`，这里再加宽度与居中是有意的，不是漏改 |
 | 说明 / 元信息 | 14px 与 12px，`--dsw-alias-label-secondary` | 同上 |
-| **操作按钮** | 用原生 `Button`，**不传 `size`** | 见下方「第四个坑」。`Button` 就是原生组件本身，所以「和原生一致」= 什么都不覆盖 |
+| **操作按钮** | 插件**自带的** `Button`（`dsp-btn` + `dsp-btn--md/--outline/--primary`），几何逐值抄自原生 | 见下方「第四个坑」。原生 `Button` 引不进来，所以把它的 markup 与 CSS 抄进来 |
 | 操作按钮变体 | `outline`（次级）/ `primary`（保存、确认） | 与原生 `Modal` 页脚一致 |
 | 删除按钮 | 在 `outline` 上叠 `dsp-danger`（红字） | **唯一一处刻意偏离原生**：原生 `Button` 没有 danger 变体。要完全一致就去掉这个 `className` |
+| 顶部提示 | 插件**自带的** `Toast`（`dsp-toast`），表面与生命周期抄自原生，不走 portal | 官方指南禁止往 `document.body` 之外写 DOM；`position:fixed` 已足够 |
 | 编辑器 | `1px solid border-l2` + `radius:12px` + `bg-layer-2` | 回滚保留（不是原生 `Input` 的 `.5px` + `radius-md`） |
 | 版本行 | `1px solid border-l2` + `radius:10px` + `bg-layer-2` | 同上 |
 | 时间 | `formatTime()` = `toLocaleString()` 绝对时间 | 回滚保留；未使用原生 `relativeTime()` |
 | 体积 | 直接输出字节原文（`1635 B`） | 回滚保留；未使用原生 `fileSizeText()` |
 | 颜色 | 全部走 `var(--dsw-*)` token，无写死色值 | 这条底线一直保持：换主题才不会花 |
 
-### 第四个坑：传了 `size`，按钮就不是原生按钮了
+### 第四个坑：不要 require Harness Client 包（按钮「不像原生」的真正原因）
 
-用户反馈「桌面端按钮和原生不一致」。根因不是缺依赖，而是**插件自己覆盖了尺寸**：
+用户反馈桌面端按钮和原生不一致，而且**改 `size` 毫无效果**。查到最后不是尺寸问题：插件一直在 `require("@deepseek-ai/dsh-client-ui-primitives")`，而**这是 DSH 官方禁止的**。
 
-| | `size` | 高度 | 圆角 | 字号 |
-|---|---|---|---|---|
-| 原生默认（设置页操作按钮） | 不传 → `.md` | **36px** | `radius-md` **12px** | 14px / 22px |
-| 紧凑变体（密集工具栏） | `size="sm"` | 28px | `radius-sm` 8px | 12px / 18px |
+依据 —— `@deepseek-ai/dsh-agent-preset/skills/cordis-plugin-development/references/practices.md` 的 UI 段原文：
 
-依据：`@deepseek-ai/dsh-client-ui-primitives/lib/Button.module.css` 的 `.button` / `.md` / `.sm`；原生设置页 `dsh-client-ui-settings-account` 的 `.linkButton` 就是 36px 那套，其 README 也写明「用量与充值链接与**标准 Button 尺寸**一致」。
+> **Do not `require('@deepseek-ai/dsh-client-ui-primitives')` or load any other Harness Client package as a module**; `dsh.client.inject` entries only order activation and stay allowed. They change without notice, a plain-JS plugin has no type check, and a throwing component blanks your slot entry (console: `slot entry crashed in '<slot>'`). Write your own controls and match the host instead: copy markup, CSS, and behavior from the primitive into the plugin …, **Rename copied classes under your plugin's prefix, keep only `--dsw-alias-*` token references**, and keep the behavior that users rely on …
 
-所以「和原生按钮一样」不需要写任何 CSS，**去掉 `size` 覆盖即可** —— 组件、类名、hover/disabled/focus 全部由原语提供。
+也就是说：`dsh.client.inject` 里的条目**只排序激活顺序，不提供模块**；`require` 拿不到可用的原语。之前的代码写成
+
+```js
+const Button = typeof primitives.Button === "function" ? primitives.Button : FallbackButton;
+```
+
+于是它静默走了 `FallbackButton` —— 一个**裸 `<button>`**，渲染出来就是浏览器默认外观：深色 1px 边框、约 4px 圆角、灰底禁用态。因为裸 `<button>` 不认识 `size`，所以「把 `size="sm"` 改成默认」自然毫无变化。**这个兜底把错误藏了整整三个版本。**
+
+现在的做法（`lib/client.js`）：把原语的 markup 与 CSS 抄进来，类名改到 `dsp-` 前缀，只保留 `--dsw-*` token，行为一一对应：
+
+| | 原生 | 本插件 |
+|---|---|---|
+| 基础 | `.button{border-radius:var(--dsw-radius-md);padding:0 14px;font-size:14px;gap:4px}` | `.dsp-btn{…同值}` |
+| 尺寸 | `.md{height:36px}` / `.sm{height:28px;…}` | `.dsp-btn--md` / `.dsp-btn--sm` |
+| 变体 | `.outline{border:.5px solid var(--dsw-alias-border-l3)}` / `.primary{background:var(--dsw-alias-button-primary-fill)}` | `.dsp-btn--outline` / `.dsp-btn--primary` |
+| 禁用 | `.button:disabled{opacity:.4}` | `.dsp-btn:disabled{opacity:.4}` |
+| 提示 | `Toast.module.css` 的 `--dsw-alias-toast-bg/label` + `shadow-lv3` | `.dsp-toast{…同值}`，不用 portal |
+
+`test/client-render.test.mjs` 里加了一条**回归闸门**：断言 `lib/client.js` 的 `require` 只有 `react`，任何 Harness Client 包进来就红。
 
 ### 另外两个一直存在的坑
 
@@ -199,7 +215,7 @@ pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.te
 |---|---|---|
 | `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
 | `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
-| `test/client-render.test.mjs` | 9 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的结构、版本行的绝对时间与字节原文、**按钮不传 `size`/`icon`**（传了就不再是原生标准尺寸）、**原语整个缺席时仍能渲染**（兜底 `<button>` 与 variant 语义）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、样式取值与回滚决定一致且不写死颜色、类名与样式双向一致（无死样式） |
+| `test/client-render.test.mjs` | 9 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的结构、版本行的绝对时间与字节原文、按钮走自带的 `dsp-btn`（默认 `md` 与原语同尺寸、primary/outline 与 `dsp-danger` 语义）、**`require` 只有 `react`**（禁止引 Harness Client 包的回归闸门）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、抄进来的按钮几何与原生逐值一致、类名与样式双向一致（无死样式） |
 | `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
 
 合计 47 项。

@@ -7,11 +7,14 @@
  * 把原生 36px 的 `Button` 传成了 `size="sm"`（28px / radius-sm / 12px 字），
  * 屏幕上和原生一眼就不一致，而测试全绿。**样式对不对最终是像素问题。**
  *
- * 做法：把真实渲染树序列化成 HTML，配上**运行时的真实 CSS**——
+ * 做法：把真实渲染树序列化成 HTML，配上——
  *   - 主题包的 408 个 `:root` token（`theme-tokens.mjs`）
- *   - primitives 真实的 `Button.module.css` / `Tag.module.css` / `Input.module.css`
  *   - 本束自己的 `.dsp-*`（从 `lib/client.js` 现取，不会和实现漂移）
  * 然后用无头 Chromium 截图。
+ *
+ * **故意不注入 primitives 的 CSS**：插件按官方指南自带了按钮/提示样式
+ * （不 require Harness Client 包），所以这里若再喂原语的 CSS 就会掩盖「自己没写样式」
+ * 这个错误 —— 少写一条规则，预览里就会露出浏览器默认按钮的样子。
  *
  * **必须在 DPR 2 下截图**：原生大量使用 `0.5px` 发丝边，1x 下会渲染成 0 像素，
  * 看起来「边框全丢了」，会得出错误结论。
@@ -41,11 +44,6 @@ const CHROMIUM_CANDIDATES = [
     '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
 ]
 
-const PRIMITIVE_CSS = {
-    button: 'dsh/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/Button.module.css',
-    tag: 'dsh/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/Tag.module.css',
-    input: 'dsh/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/Input.module.css',
-}
 
 /** 在 JS 源码里扫出双引号字符串字面量（正确跳过 `\"`）。 */
 function jsStringLiterals(source) {
@@ -74,14 +72,6 @@ function bundleStyle() {
     return jsStringLiterals(chunk)
         .map((literal) => JSON.parse(`"${literal}"`))
         .join('')
-}
-
-/** 从 asar 里取出一段 CSS：优先整文件，否则在客户端束里按标记找字面量。 */
-function readCss(asar, path, marker) {
-    if (!marker) return asar.read(path)
-    const literal = jsStringLiterals(asar.read(path)).find((text) => text.includes(marker))
-    if (literal === undefined) throw new Error(`${path} 里没找到含 ${marker} 的 CSS`)
-    return literal
 }
 
 const VOID_TAGS = new Set(['br', 'hr', 'img', 'input'])
@@ -129,9 +119,6 @@ let html
 try {
     const css = {
         tokens: themeTokenCss(DSH_ASAR_PATH),
-        button: readCss(asar, PRIMITIVE_CSS.button),
-        tag: readCss(asar, PRIMITIVE_CSS.tag),
-        input: readCss(asar, PRIMITIVE_CSS.input),
         bundle: bundleStyle(),
     }
 
@@ -147,7 +134,7 @@ body{margin:0;background:var(--dsw-alias-bg-base);font:14px/22px -apple-system,"
 /* 复刻外壳的 section 容器：.Dws9Sa_options{padding:0 24px 24px;overflow-y:auto} */
 .options{padding:0 24px 24px;}
 </style>
-<style>${css.button}</style><style>${css.tag}</style><style>${css.input}</style><style>${css.bundle}</style>
+<style>${css.bundle}</style>
 </head><body><div class="options">${toHtml(page.tree)}</div></body></html>`
 } finally {
     asar.close()

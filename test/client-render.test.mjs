@@ -102,37 +102,31 @@ test('版本行显示绝对时间与原样字节数（回滚后的取值）', as
     assert.ok(!empty.some((line) => /还没有历史版本/.test(line)), '有版本时不该显示空态')
 })
 
-test('操作按钮不覆盖原生尺寸，且不带图标', async () => {
+test('按钮用抄进来的原生几何（dsp-btn + md / outline / primary）', async () => {
     const { page } = await mountWithOneVersion()
     const buttons = hostsOf(page.tree, 'button')
     assert.ok(buttons.length >= 4, `页面级与行级按钮都应渲染，实际 ${buttons.length}`)
 
-    // 用户要求按钮和原生一致。`Button` 就是原生组件本身，所以「一致」= 什么都不覆盖：
-    //   - 传 size 会从默认 md（36px / radius-md 12px / 14px 字）退化成 sm（28px / radius-sm / 12px 字）
-    //   - 原生设置页的操作行是纯文字按钮，不挂 icon
+    // 官方指南禁止 require Harness Client 包，所以 Button 是抄进来的（见 lib/client.js）。
+    // 不传 size 即 dsp-btn--md：36px 高 / radius-md 12px / 14px 字 —— 与原生标准按钮同尺寸。
     for (const button of buttons) {
-        assert.equal(button.props['data-size'], undefined, '不该传 size，否则不是原生标准 Button 尺寸')
-        assert.equal(button.props['data-has-icon'], undefined, '不挂图标，保持原生按钮的原始构成')
+        assert.match(button.props.className, /(^| )dsp-btn( |$)/, '按钮要走抄进来的原生按钮')
+        assert.match(button.props.className, /dsp-btn--md( |$)/, '默认 md，与原生标准按钮同尺寸')
+        assert.equal(button.props.type, 'button', '与原生一样显式声明 type')
     }
-    assert.ok(buttons.some((node) => node.props['data-variant'] === 'primary'), '保存 / 确认走 primary')
-    assert.ok(buttons.some((node) => node.props['data-variant'] === 'outline'), '次级操作走 outline')
+    assert.ok(buttons.some((node) => /dsp-btn--primary/.test(node.props.className)), '保存 / 确认走 primary')
+    assert.ok(buttons.some((node) => /dsp-btn--outline/.test(node.props.className)), '次级操作走 outline')
+    assert.ok(buttons.some((node) => /dsp-danger/.test(node.props.className)), '删除按钮保留红字（唯一刻意偏离）')
 })
 
-test('原语整个缺席时整页仍能渲染，并退回兜底按钮', async () => {
-    const { page } = await mountWithOneVersion('none')
-
-    const text = textOf(page.tree)
-    assert.match(text, /个性化/, '标题要在')
-    assert.match(text, /1635 B/, '字节数照常显示')
-    assert.match(text, new RegExp(VERSION_ID), '版本 id 照常显示')
-
-    const buttons = hostsOf(page.tree, 'button')
-    assert.ok(buttons.length >= 3, '兜底 Button 仍然渲染成 <button>')
-    assert.ok(
-        buttons.some((node) => node.props['data-variant'] === 'outline') &&
-        buttons.some((node) => node.props['data-variant'] === 'primary'),
-        '兜底按钮保留 variant 语义',
-    )
+test('只 require react，不 require 任何 Harness Client 包', async () => {
+    // `dsh-agent-preset/skills/cordis-plugin-development/references/practices.md` 的 UI 段：
+    // "Do not require('@deepseek-ai/dsh-client-ui-primitives') or load any other Harness
+    //  Client package as a module" —— 它们会无预警变更，纯 JS 插件没有类型检查，
+    //  一个抛错的组件会让整个 slot 条目变空白。原语要抄进来，不是引进来。
+    const source = await readFile(clientPath, 'utf8')
+    const required = [...new Set([...source.matchAll(/require\(\s*"([^"]+)"\s*\)/g)].map((match) => match[1]))]
+    assert.deepEqual(required, ['react'], `插件只能 require react，实际：${required.join(', ')}`)
 })
 
 test('编辑器有未保存改动时状态转 dirty，回滚被禁用而保存可用', async () => {
@@ -222,6 +216,15 @@ test('样式沿用回滚前的取值（用户要求的外观）', async () => {
     assert.match(style, /\.dsp-version\{[^}]*border-radius:10px/)
     assert.match(style, /\.dsp-actions\{[^}]*gap:8px/)
 
+    // 抄进来的按钮几何必须和原生 Button.module.css 逐值一致（md = 36px / radius-md）。
+    assert.match(style, /\.dsp-btn\{[^}]*border-radius:var\(--dsw-radius-md\)/)
+    assert.match(style, /\.dsp-btn\{[^}]*padding:0 14px/)
+    assert.match(style, /\.dsp-btn--md\{height:36px\}/)
+    assert.match(style, /\.dsp-btn--sm\{[^}]*height:28px/)
+    assert.match(style, /\.dsp-btn--outline\{border:\.5px solid var\(--dsw-alias-border-l3\)/)
+    assert.match(style, /\.dsp-btn--primary\{[^}]*var\(--dsw-alias-button-primary-fill\)/)
+    assert.match(style, /\.dsp-btn:disabled\{[^}]*opacity:\.4\}/)
+
     // 唯一保留的底线：不写死颜色（颜色全部走 token，改主题才不会花）。
     assert.doesNotMatch(style, /#[0-9a-fA-F]{3,8}\b/, '不该出现写死的十六进制颜色')
     assert.doesNotMatch(style, /\brgba?\(|\bhsla?\(/, '不该出现写死的 rgb/hsl 颜色')
@@ -229,13 +232,16 @@ test('样式沿用回滚前的取值（用户要求的外观）', async () => {
 
 test('样式类名与渲染代码双向一致（没有死样式，也没有裸类名）', async () => {
     const { style, rest } = await styleSource()
-    const defined = new Set([...style.matchAll(/\.(dsp-[a-z0-9-]+)\{/g)].map((match) => match[1]))
+    // 只要在**任何选择器位置**出现过就算已定义：`.dsp-btn--ghost` 和原生 `.ghost` 一样
+    // 只有 `:hover` / `:active` 规则，没有紧跟 `{` 的基础规则。
+    const defined = new Set([...style.matchAll(/\.(dsp-[a-z0-9-]+)/g)].map((match) => match[1]))
     assert.ok(defined.size >= 20, `样式类名数量异常：${defined.size}`)
 
     const dead = [...defined].filter((name) => !rest.includes(name)).sort()
     assert.deepEqual(dead, [], `定义了但没用到：${dead.join(', ')}`)
 
-    const used = new Set([...rest.matchAll(/(dsp-[a-z0-9-]+)/g)].map((match) => match[1]))
+    // 只看类名：`--dsp-toast-hold` 这类自定义属性左边是 `-`，不算类名。
+    const used = new Set([...rest.matchAll(/(?<!-)(dsp-[a-z0-9-]+)/g)].map((match) => match[1]))
     const naked = [...used].filter((name) => !defined.has(name)).sort()
     assert.deepEqual(naked, [], `用到但没有样式：${naked.join(', ')}`)
 })
