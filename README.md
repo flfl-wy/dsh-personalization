@@ -55,45 +55,41 @@ tools/visual-preview.mjs  静态视觉预览：用运行时真实 CSS 把设置�
 
 这份「必须一致」以前只靠人工纪律维持，现在由 `test/manifest-parity.test.mjs` 断言：两半区的端点集合与每个端点的 `id` / `service` / `namespace` / `method` / receiver kind / 参数 `name`·`wire`·`source` / codec `mode`·`typeSymbol` 必须逐字段相同。它同时按 `dsh-typert-loader` 的 `requireInvocation` 规则校验 `MANIFEST`（端点与 id 不得重复 —— 重复会被整批拒绝），并用真实的 `lib/agents-file.js` 返回值去 parse 每个结果 schema。
 
-## 界面风格（第四个坑：token 名写错不会报错）
+## 界面风格（第四个坑：`size` 覆盖会让按钮不再是原生按钮）
 
-设置页的外观按 DSH 原生设置页的规范做，依据全部取自运行时自带源码，不是凭印象调的。要改样式前请看下表，它记录了「为什么是这个值」：
+> **2026-10-10 的取舍记录**：先按「对齐原生」重做了一版（18px 标题、720px、`radius-xl` 卡片、`Tag` 胶囊、时间走 `relativeTime`），用户看过之后认为**不好看**，要求回滚到改造之前。于是版式回到 `90bfb9d`，只有**按钮**按要求改成与原生一致。下表是当前实际取值，改之前先看这里。
 
-| 项 | 取值 | 依据 |
+| 项 | 当前取值 | 说明 |
 |---|---|---|
-| 页宽 / 纵向节奏 | `max-width:720px` + `gap:12px` + 纵向 flex | `dsh-client-ui-agent-preset` 的 `.section`；外壳的 `.Dws9Sa_options` 已给 `padding:0 24px 24px` 和自己的滚动，所以**束不能再加宽度、居中或左右内边距**，否则会变成 48px |
-| 页标题 | 18px / 600 | 同上的 `.title`（外壳 header 只放 `settings.action` 与关闭按钮，标题必须由 section 自绘） |
-| 说明文字 | 13px + `--dsw-alias-label-tertiary` | 同上的 `.intro` |
-| 输入控件 | `border:.5px` + `radius-md`(12px) + `bg-layer-1`，聚焦改边框色 | `@deepseek-ai/dsh-client-ui-primitives/lib/Input.module.css` 的 `.wrap` / `.wrap:focus-within` |
-| 操作按钮尺寸 | `Button` **默认尺寸**（不传 `size`）= 36px / `radius-md`(12px) / 14px·22px / `padding:0 14px` / `gap:4px` | `Button.module.css` 的 `.md`；原生设置页的 `.linkButton`（`dsh-client-ui-settings-account`）就是这套值，其 README 也写明「用量与充值链接与**标准 Button 尺寸**一致」。传 `size="sm"` 会变成 28px / `radius-sm` / 12px 字 —— 一眼就不像原生 |
-| 卡片（版本行） | `border:.5px` + `radius-xl`(20px) + `padding:12px 16px` + `settings-card-fill/stroke` | 原生 `.card` / `.balanceCard` 的原值；发丝边比 1px 更接近原生 |
-| 操作组间距 | `gap:10px` | 原生 `.links{flex-wrap:wrap;justify-content:flex-end;gap:10px}` |
-| 分隔线 | `border-top:.5px solid var(--dsw-alias-border-l2)` | 原生 `.divider`（比 1px 更细） |
-| 状态标签 | 直接用 `Tag`，**不改它的字号** | `Tag.module.css` 开头写着「Capsule geometry is fixed: a tag reads as one size everywhere, and only its palette varies」—— 几何是原语的固定契约（11px/17px、胶囊、`padding:1px 8px`），只该换 `tone` |
-| 悬停 | `interactive-bg-hover` | 原生交互填充；原生 `Button` **没有** danger 变体，`Modal` 页脚也只是 `outline`(取消) + `primary`(确认)，所以删除按钮**不染红**，破坏性靠行内二次确认兜 |
-| 排版 / 圆角 / 代码字体 | `--dsw-font-*` 复合值、`--dsw-radius-*`、`--ds-font-family-code` | `@deepseek-ai/dsh-client-ui-theme/lib/client.js` 的 `base_css_default`（共 408 个 token）。`--dsw-font-xs-13` 这类复合值可直接写在 `font:` 上（原生自己也这么用） |
-| 相对时间 | `relativeTime()` 只给 `{unit,n}` 分桶，措辞留在本插件的字典 | 原生把「数据分桶」与「文案归属」分开；绝对时间仍由 `formatTime()` 提供给「最后修改」 |
-| 体积 | `fileSizeText()` | 原生字节文案（`1.6KB` 这一族） |
+| 版式 | 24px / 600 标题、`width:min(100%,760px)` + `margin:0 auto` | 回滚保留。注意外壳 `.Dws9Sa_options` 已给 `padding:0 24px 24px`，这里再加宽度与居中是有意的，不是漏改 |
+| 说明 / 元信息 | 14px 与 12px，`--dsw-alias-label-secondary` | 同上 |
+| **操作按钮** | 用原生 `Button`，**不传 `size`** | 见下方「第四个坑」。`Button` 就是原生组件本身，所以「和原生一致」= 什么都不覆盖 |
+| 操作按钮变体 | `outline`（次级）/ `primary`（保存、确认） | 与原生 `Modal` 页脚一致 |
+| 删除按钮 | 在 `outline` 上叠 `dsp-danger`（红字） | **唯一一处刻意偏离原生**：原生 `Button` 没有 danger 变体。要完全一致就去掉这个 `className` |
+| 编辑器 | `1px solid border-l2` + `radius:12px` + `bg-layer-2` | 回滚保留（不是原生 `Input` 的 `.5px` + `radius-md`） |
+| 版本行 | `1px solid border-l2` + `radius:10px` + `bg-layer-2` | 同上 |
+| 时间 | `formatTime()` = `toLocaleString()` 绝对时间 | 回滚保留；未使用原生 `relativeTime()` |
+| 体积 | 直接输出字节原文（`1635 B`） | 回滚保留；未使用原生 `fileSizeText()` |
+| 颜色 | 全部走 `var(--dsw-*)` token，无写死色值 | 这条底线一直保持：换主题才不会花 |
 
-**踩过的坑**：CSS 里写错 token 名（例如 `--dsw-alias-label-quaternary`）**不会报错**，`var()` 静默失效、退回继承值 —— 界面照样能渲染，只是不对。所以 `test/client-render.test.mjs` 有一条测试从 asar 里的主题包**重新提取权威 token 名单**，断言束用到的每个 `var(--dsw-*)` / `var(--ds-*)` 都真实存在。
+### 第四个坑：传了 `size`，按钮就不是原生按钮了
 
-同理，原语（`Button` / `Tag` / `PathLabel` / `relativeTime` / `fileSizeText`）一个都不能直接 `primitives.X`：束只能拿到种子词导出的名字，名字缺失就是整页白屏。全部经 `pick(name, fallback)` 取，并有一条测试在**原语整个缺席**（`primitives:'none'`）时仍要求整页正常渲染。
+用户反馈「桌面端按钮和原生不一致」。根因不是缺依赖，而是**插件自己覆盖了尺寸**：
 
-还要注意：`Tag` 挂的是 **`data-tone`**（`Tag.module.css` 选择 `.tag[data-tone='…']`），不是 `data-tag`。测试替身里写错这个名字不会让任何断言失败 —— 因为断言也是照替身写的，属于自我印证；把渲染结果配上真实 CSS 一看就露馅。这是 `tools/visual-preview.mjs` 存在的理由之一。
+| | `size` | 高度 | 圆角 | 字号 |
+|---|---|---|---|---|
+| 原生默认（设置页操作按钮） | 不传 → `.md` | **36px** | `radius-md` **12px** | 14px / 22px |
+| 紧凑变体（密集工具栏） | `size="sm"` | 28px | `radius-sm` 8px | 12px / 18px |
 
-### 为什么需要视觉预览（第五个坑：测试全绿但和原生不一致）
+依据：`@deepseek-ai/dsh-client-ui-primitives/lib/Button.module.css` 的 `.button` / `.md` / `.sm`；原生设置页 `dsh-client-ui-settings-account` 的 `.linkButton` 就是 36px 那套，其 README 也写明「用量与充值链接与**标准 Button 尺寸**一致」。
 
-`npm test` 只能回答「结构对不对、原语调没调到、token 存不存在」。**「按钮是不是原生那个尺寸」它答不了。** 本插件就把原生 36px 的 `Button` 传成了 `size="sm"`，48 项测试全过，屏幕上却和原生一眼不一致。
+所以「和原生按钮一样」不需要写任何 CSS，**去掉 `size` 覆盖即可** —— 组件、类名、hover/disabled/focus 全部由原语提供。
 
-`npm run preview` 补上这一环：它把**真实渲染树**序列化成 HTML，配上运行时的真实 CSS（408 个 `:root` token + primitives 的 `Button/Tag/Input.module.css` + 原生设置页的 `.linkButton` 作对照物 + 本束现取的 `.dsp-*`），再用本机 Chromium 内核浏览器截图。
+### 另外两个一直存在的坑
 
-两个必须遵守的细节：
+**token 名写错不报错**：CSS 里写错一个 token 名（例如 `--dsw-alias-label-quaternary`），`var()` 只是静默失效、退回继承值 —— 界面照样渲染，只是不对。所以 `test/client-render.test.mjs` 从 asar 里的主题包**重新提取权威名单**（408 个），断言束用到的每个 `var(--dsw-*)` / `var(--ds-*)` 都真实存在。
 
-| 细节 | 原因 |
-|---|---|
-| 必须 `--force-device-scale-factor=2` | 原生大量用 `0.5px` 发丝边，**1x 下会渲染成 0 像素**，看起来「边框全丢了」，会得出错误结论 |
-| token 取**首个**定义 | 主题包先给亮色基础主题、再给暗色覆盖，取最后一个会得到暗色界面 |
-| `:root` 过滤不可靠 | token 定义并不都在 `:root{…}` 字面量里；按 `--dsw-` 从全部 CSS 字面量里重建才能拿到完整的 408 个（只按 `:root` 过滤只能拿到 29 个，`var()` 大面积失效） |
+**原语可能整体缺席**：束只能拿到外壳种子词导出的名字（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`）。`primitives.Button` 缺失时若直接 `h(primitives.Button, …)` 会整页白屏，因此都经 `typeof primitives.X === "function" ? … : Fallback` 判断，并有一条测试在**原语整个缺席**（`primitives:'none'`）时仍要求整页正常渲染。
 
 ## 依赖设计（关键，改之前先读）
 
@@ -203,10 +199,10 @@ pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.te
 |---|---|---|
 | `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
 | `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
-| `test/client-render.test.mjs` | 11 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的原生结构、时间走 `relativeTime`、体积走 `fileSizeText`、id 走 `Tag`（`data-tone`）、**按钮不传 `size`/`icon`**（传了就会偏离原生标准尺寸）、**原语整个缺席时仍能渲染**（兜底文案、`<button>` 与 variant 语义）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、样式数值与原生 Button / 卡片规范逐项一致、不写死颜色与字体栈且不重复外壳内边距、类名与样式双向一致（无死样式） |
+| `test/client-render.test.mjs` | 9 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的结构、版本行的绝对时间与字节原文、**按钮不传 `size`/`icon`**（传了就不再是原生标准尺寸）、**原语整个缺席时仍能渲染**（兜底 `<button>` 与 variant 语义）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、样式取值与回滚决定一致且不写死颜色、类名与样式双向一致（无死样式） |
 | `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
 
-合计 48 项。
+合计 47 项。
 
 两个 helper 支撑上面这些用例：
 

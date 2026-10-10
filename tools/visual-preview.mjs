@@ -10,7 +10,6 @@
  * 做法：把真实渲染树序列化成 HTML，配上**运行时的真实 CSS**——
  *   - 主题包的 408 个 `:root` token（`theme-tokens.mjs`）
  *   - primitives 真实的 `Button.module.css` / `Tag.module.css` / `Input.module.css`
- *   - 原生设置页参照物 `dsh-client-ui-settings-account` 的 `.linkButton`（≡ `Button size=md`）
  *   - 本束自己的 `.dsp-*`（从 `lib/client.js` 现取，不会和实现漂移）
  * 然后用无头 Chromium 截图。
  *
@@ -42,8 +41,6 @@ const CHROMIUM_CANDIDATES = [
     '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
 ]
 
-/** 原生设置页里那段 `.linkButton` 的 CSS 所在（用作对照物）。 */
-const ACCOUNT_CLIENT_PATH = 'dsh/node_modules/@deepseek-ai/dsh-client-ui-settings-account/lib/client.js'
 const PRIMITIVE_CSS = {
     button: 'dsh/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/Button.module.css',
     tag: 'dsh/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/Tag.module.css',
@@ -135,7 +132,6 @@ try {
         button: readCss(asar, PRIMITIVE_CSS.button),
         tag: readCss(asar, PRIMITIVE_CSS.tag),
         input: readCss(asar, PRIMITIVE_CSS.input),
-        account: readCss(asar, ACCOUNT_CLIENT_PATH, '.B10aXW_section{'),
         bundle: bundleStyle(),
     }
 
@@ -144,31 +140,15 @@ try {
     seedVersions(bundle)
     const page = await mountSection(bundle)
 
-    // 从渲染树里截出「状态行 + 按钮」与历史版本组，作为本实现的对照条。
-    const panel = toHtml(page.tree)
-    const from = panel.indexOf('<div class="dsp-bar">')
-    const to = panel.indexOf('</section>')
-    const mine = from >= 0 && to > from ? `${panel.slice(from, to)}</section>` : panel
-
     html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><style>
 ${css.tokens}
 *{box-sizing:border-box;}
-body{margin:0;padding:24px 0;background:var(--dsw-alias-bg-base);font:14px/22px -apple-system,"PingFang SC",sans-serif;color:var(--dsw-alias-label-primary);}
-.caption{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);margin:0 0 12px;}
-.frame{padding:0 24px;}
-hr{border:none;border-top:.5px solid var(--dsw-alias-border-l2);margin:26px 24px;}
+body{margin:0;background:var(--dsw-alias-bg-base);font:14px/22px -apple-system,"PingFang SC",sans-serif;color:var(--dsw-alias-label-primary);}
+/* 复刻外壳的 section 容器：.Dws9Sa_options{padding:0 24px 24px;overflow-y:auto} */
+.options{padding:0 24px 24px;}
 </style>
-<style>${css.button}</style><style>${css.tag}</style><style>${css.account}</style><style>${css.bundle}</style>
-</head><body>
-<div><p class="caption">① 原生参照物 dsh-client-ui-settings-account —— .linkButton 与 Button size=md 同尺寸</p>
-<div class="frame"><div class="B10aXW_section"><div class="B10aXW_card"><div class="B10aXW_row">
-  <span class="B10aXW_secondary">更多</span>
-  <div class="B10aXW_links"><a class="B10aXW_linkButton">查询用量</a><a class="B10aXW_linkButton B10aXW_primary">充值</a></div>
-</div></div></div></div></div>
-<hr>
-<div><p class="caption">② 个性化页（本实现的真实渲染树）</p>
-<div class="frame"><div class="dsp-root">${mine}</div></div></div>
-</body></html>`
+<style>${css.button}</style><style>${css.tag}</style><style>${css.input}</style><style>${css.bundle}</style>
+</head><body><div class="options">${toHtml(page.tree)}</div></body></html>`
 } finally {
     asar.close()
 }
@@ -184,7 +164,7 @@ const args = [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--force-device-scale-factor=2', // 0.5px 发丝边在 1x 下会消失
     `--user-data-dir=${join(OUT, 'browser-profile')}`,
-    '--window-size=780,640',
+    '--window-size=780,1080',
     `--screenshot=${shotPath}`,
     `file://${htmlPath}`,
 ]
