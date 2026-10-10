@@ -126,16 +126,31 @@ try {
     await bundle.exports.apply(bundle.ctx)
     seedVersions(bundle)
     const page = await mountSection(bundle)
+    // 只截「底部操作区 + 历史版本」这一段：按钮都在这里，两段叠起来也放得下。
+    const actionAreaOf = (markup) => {
+        const at = markup.indexOf('<footer class="dsp-footer">')
+        return at >= 0 ? markup.slice(at) : markup
+    };
+    const idle = actionAreaOf(toHtml(page.tree))
+    // 按下「删除」后的确认态（实心红按钮只在这里出现）
+    await page.press('删除')
+    const confirming = actionAreaOf(toHtml(page.tree))
 
     html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><style>
 ${css.tokens}
 *{box-sizing:border-box;}
 body{margin:0;background:var(--dsw-alias-bg-base);font:14px/22px -apple-system,"PingFang SC",sans-serif;color:var(--dsw-alias-label-primary);}
+.caption{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);margin:16px 0 8px;padding:0 24px;}
+hr{border:none;border-top:.5px solid var(--dsw-alias-border-l2);margin:20px 24px;}
 /* 复刻外壳的 section 容器：.Dws9Sa_options{padding:0 24px 24px;overflow-y:auto} */
 .options{padding:0 24px 24px;}
 </style>
 <style>${css.bundle}</style>
-</head><body><div class="options">${toHtml(page.tree)}</div></body></html>`
+</head><body>
+<div class="caption">① 默认态</div><div class="options">${idle}</div>
+<hr>
+<div class="caption">② 按下「删除」后的确认态（实心红只在这里出现）</div><div class="options">${confirming}</div>
+</body></html>`
 } finally {
     asar.close()
 }
@@ -151,7 +166,7 @@ const args = [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--force-device-scale-factor=2', // 0.5px 发丝边在 1x 下会消失
     `--user-data-dir=${join(OUT, 'browser-profile')}`,
-    '--window-size=780,1080',
+    '--window-size=780,700',
     `--screenshot=${shotPath}`,
     `file://${htmlPath}`,
 ]

@@ -65,7 +65,8 @@ tools/visual-preview.mjs  静态视觉预览：用运行时真实 CSS 把设置�
 | 说明 / 元信息 | 14px 与 12px，`--dsw-alias-label-secondary` | 同上 |
 | **操作按钮** | 插件**自带的** `Button`（`dsp-btn` + `dsp-btn--md/--outline/--primary`），几何逐值抄自原生 | 见下方「第四个坑」。原生 `Button` 引不进来，所以把它的 markup 与 CSS 抄进来 |
 | 操作按钮变体 | `outline`（次级）/ `primary`（保存、确认） | 与原生 `Modal` 页脚一致 |
-| 删除按钮 | 在 `outline` 上叠 `dsp-danger`（红字） | **唯一一处刻意偏离原生**：原生 `Button` 没有 danger 变体。要完全一致就去掉这个 `className` |
+| 删除按钮 | `outline` + `dsp-danger` 红字，hover 用 `interactive-bg-hover-danger` 淡红底 | **刻意偏离原生**（用户要求醒目）。原生没有 danger 按钮 |
+| 确认删除 | `dsp-btn--danger` **实心红**（`state-error-primary` 填充 + `label-primary-foreground` 白字），hover 转 `state-error-secondary` | 同上。设计系统只有这三个 alias token，没给 danger 的填充/hover 配对，所以不自己发明颜色 |
 | 顶部提示 | 插件**自带的** `Toast`（`dsp-toast`），表面与生命周期抄自原生，不走 portal | 官方指南禁止往 `document.body` 之外写 DOM；`position:fixed` 已足够 |
 | 编辑器 | `1px solid border-l2` + `radius:12px` + `bg-layer-2` | 回滚保留（不是原生 `Input` 的 `.5px` + `radius-md`） |
 | 版本行 | `1px solid border-l2` + `radius:10px` + `bg-layer-2` | 同上 |
@@ -100,6 +101,21 @@ const Button = typeof primitives.Button === "function" ? primitives.Button : Fal
 | 提示 | `Toast.module.css` 的 `--dsw-alias-toast-bg/label` + `shadow-lv3` | `.dsp-toast{…同值}`，不用 portal |
 
 `test/client-render.test.mjs` 里加了一条**回归闸门**：断言 `lib/client.js` 的 `require` 只有 `react`，任何 Harness Client 包进来就红。
+
+### 第五个坑：CSS 级联顺序错了不会报错，只会「没效果」
+
+`.dsp-btn` 基础规则里写了 `color` 与 `background`，而修饰类（`.dsp-btn--danger` 等）与它**同为单类选择器** —— 靠后的胜出。所以修饰类必须排在基础规则之后；排在前面会被静默覆盖。
+
+这不是洁癖：`.dsp-btn--danger` 曾经被放在 `.dsp-btn` 之前，实心红整块被 `background:transparent` 擦掉，按钮在界面上看起来就是**一段纯文字**，而所有测试都是绿的。
+
+`test/client-render.test.mjs` 现在有一条测试逐个断言修饰类的位置在 `.dsp-btn{` 之后。另外 `npm run preview` 的截图能直接看出这类问题 —— 但**最硬的证据是计算后的样式**：
+
+```sh
+# 给 tools/preview/panel.html 注入一段读取 getComputedStyle 的脚本，再用无头 Chromium 打印 DOM
+node tools/visual-preview.mjs
+"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" --headless=new --disable-gpu \
+  --virtual-time-budget=3000 --dump-dom "file://$PWD/tools/preview/panel.html"
+```
 
 ### 另外两个一直存在的坑
 
@@ -215,10 +231,10 @@ pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.te
 |---|---|---|
 | `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
 | `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
-| `test/client-render.test.mjs` | 9 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的结构、版本行的绝对时间与字节原文、按钮走自带的 `dsp-btn`（默认 `md` 与原语同尺寸、primary/outline 与 `dsp-danger` 语义）、**`require` 只有 `react`**（禁止引 Harness Client 包的回归闸门）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、抄进来的按钮几何与原生逐值一致、类名与样式双向一致（无死样式） |
+| `test/client-render.test.mjs` | 10 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的结构、版本行的绝对时间与字节原文、按钮走自带的 `dsp-btn`（默认 `md` 与原语同尺寸、primary/outline 与 `dsp-danger` 语义）、**`require` 只有 `react`**（禁止引 Harness Client 包的回归闸门）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、抄进来的按钮几何与原生逐值一致、类名与样式双向一致（无死样式）、**按钮修饰类必须排在基础规则之后**（级联顺序） |
 | `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
 
-合计 47 项。
+合计 48 项。
 
 两个 helper 支撑上面这些用例：
 

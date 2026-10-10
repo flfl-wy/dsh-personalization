@@ -114,9 +114,12 @@ test('按钮用抄进来的原生几何（dsp-btn + md / outline / primary）', 
         assert.match(button.props.className, /dsp-btn--md( |$)/, '默认 md，与原生标准按钮同尺寸')
         assert.equal(button.props.type, 'button', '与原生一样显式声明 type')
     }
-    assert.ok(buttons.some((node) => /dsp-btn--primary/.test(node.props.className)), '保存 / 确认走 primary')
+    assert.ok(buttons.some((node) => /dsp-btn--primary/.test(node.props.className)), '保存 / 确认回滚走 primary')
     assert.ok(buttons.some((node) => /dsp-btn--outline/.test(node.props.className)), '次级操作走 outline')
-    assert.ok(buttons.some((node) => /dsp-danger/.test(node.props.className)), '删除按钮保留红字（唯一刻意偏离）')
+
+    // 删除是红字（用户要求醒目）。实心红的「确认删除」只在确认态出现，见下一条测试。
+    const remove = buttons.find((node) => textOf(node).includes('删除'))
+    assert.match(remove.props.className, /dsp-danger/, '删除按钮走红字')
 })
 
 test('只 require react，不 require 任何 Harness Client 包', async () => {
@@ -152,6 +155,10 @@ test('破坏性操作要行内二次确认，取消可退回', async () => {
     let labels = hostsOf(page.tree, 'button').map(textOf)
     assert.ok(labels.some((line) => line.includes('确认删除')), '第一次点击只应进入确认态')
     assert.ok(labels.some((line) => line.includes('取消')))
+
+    // 用户要求破坏性操作一眼可见：确认删除是实心红，不是原生的深色 primary。
+    const confirmRemove = hostsOf(page.tree, 'button').find((node) => textOf(node).includes('确认删除'))
+    assert.match(confirmRemove.props.className, /dsp-btn--danger/, '确认删除要走实心红')
     assert.equal(
         bundle.records.calls.some((call) => call.method === 'deleteVersion'),
         false,
@@ -225,6 +232,12 @@ test('样式沿用回滚前的取值（用户要求的外观）', async () => {
     assert.match(style, /\.dsp-btn--primary\{[^}]*var\(--dsw-alias-button-primary-fill\)/)
     assert.match(style, /\.dsp-btn:disabled\{[^}]*opacity:\.4\}/)
 
+    // 破坏性操作的红（用户要求醒目）：红字 + 淡红 hover；确认删除是实心红。
+    assert.match(style, /\.dsp-danger\{color:var\(--dsw-alias-state-error-primary\)\}/)
+    assert.match(style, /\.dsp-danger:hover:not\(:disabled\)\{background:var\(--dsw-alias-interactive-bg-hover-danger\)\}/)
+    assert.match(style, /\.dsp-btn--danger\{background:var\(--dsw-alias-state-error-primary\);color:var\(--dsw-alias-label-primary-foreground\)\}/)
+    assert.match(style, /\.dsp-btn--danger:hover:not\(:disabled\)\{background:var\(--dsw-alias-state-error-secondary\)\}/)
+
     // 唯一保留的底线：不写死颜色（颜色全部走 token，改主题才不会花）。
     assert.doesNotMatch(style, /#[0-9a-fA-F]{3,8}\b/, '不该出现写死的十六进制颜色')
     assert.doesNotMatch(style, /\brgba?\(|\bhsla?\(/, '不该出现写死的 rgb/hsl 颜色')
@@ -244,4 +257,27 @@ test('样式类名与渲染代码双向一致（没有死样式，也没有裸�
     const used = new Set([...rest.matchAll(/(?<!-)(dsp-[a-z0-9-]+)/g)].map((match) => match[1]))
     const naked = [...used].filter((name) => !defined.has(name)).sort()
     assert.deepEqual(naked, [], `用到但没有样式：${naked.join(', ')}`)
+})
+
+test('按钮的修饰类必须排在 `.dsp-btn` 基础规则之后', async () => {
+    const { style } = await styleSource()
+    const base = style.indexOf('.dsp-btn{')
+    assert.ok(base >= 0, '找不到 `.dsp-btn` 基础规则')
+
+    // 同为单类选择器时靠后的胜出。基础规则里写着 color/background，
+    // 所以任何修饰类只要排在它前面就会被静默覆盖 —— 不报错，只是没效果。
+    // 这条不是洁癖：`.dsp-btn--danger` 曾经排在前面，实心红整块被 `.dsp-btn`
+    // 的 background:transparent 擦掉，按钮看起来像纯文字。
+    const modifiers = [
+        '.dsp-btn--md', '.dsp-btn--sm',
+        '.dsp-btn--primary', '.dsp-btn--ghost', '.dsp-btn--outline',
+        '.dsp-btn--toolbar', '.dsp-btn--danger', '.dsp-danger',
+    ]
+    for (const modifier of modifiers) {
+        assert.ok(style.includes(modifier), `缺少规则：${modifier}`)
+        assert.ok(
+            style.indexOf(modifier) > base,
+            `${modifier} 必须排在 .dsp-btn 之后，否则被它的 color/background 覆盖`,
+        )
+    }
 })
