@@ -1,0 +1,11 @@
+# Local development tree for the dsh-personalization plugin.
+#
+# `nodeLinker: hoisted` mirrors the DSH profile it is installed into, and
+# `autoInstallPeers: false` keeps the peerDependencies (cordis and the DSH
+# packages) out of this directory: DSH's runtime resolution supplies those from
+# the running installation, and a second cordis instance here would break it.
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false

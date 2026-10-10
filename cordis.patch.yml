@@ -1,0 +1,7 @@
+# dsh-personalization bundle patch.
+# Inserted as a Loader row when the profile lists this bundle. The bare package
+# name is what attaches the package's `./client` half to this row (see
+# docs/subsystems/client-modules.md), so it must stay the bare name.
+- insert:
+    - id: personalization
+      name: dsh-personalization
