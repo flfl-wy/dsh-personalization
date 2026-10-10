@@ -7,10 +7,16 @@ node_modules/
 *.pem
 *.key
 
+# 个人指令文件与其历史版本（禁止入库）
+# 本仓库同时是一个工作区：用本插件给工作区写 AGENTS.md 会落在仓库根目录，
+# 所以 `AGENTS.md` 本身也必须挡掉 —— 只挡 `.bak-*` 是不够的（那只是备份）。
+AGENTS.md
+AGENTS.local.md
+AGENTS.md.bak-*
+
 # 日志与临时文件
 *.log
 *.tmp
-AGENTS.md.bak-*
 
 # macOS
 .DS_Store
