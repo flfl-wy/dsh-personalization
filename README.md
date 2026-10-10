@@ -48,6 +48,7 @@ cordis.patch.yml   Bundle patch：把裸包名插入为 Loader 行（客户端�
 test/helpers/      客户端束 vm 装载体（含微型 React 运行时）+ 保留名快照与 asar/token 工具
 test/fixtures/     dsh-typert-protocol 测试替身（见 manifest-parity 测试的说明）
 test/              agents-file 往返测试 + 客户端束契约测试 + 设置页渲染测试 + 跨半区契约测试
+tools/visual-preview.mjs  静态视觉预览：用运行时真实 CSS 把设置页渲染成 HTML + 截图（npm run preview）
 ```
 
 两端各持一份描述符清单（宿主 `MANIFEST.invocations` / 客户端 `CONTRIBUTION.descriptors`），字段必须一致。客户端束是手写的，不经构建；它只能 `require` 外壳种子词：`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`。
@@ -64,15 +65,35 @@ test/              agents-file 往返测试 + 客户端束契约测试 + 设置�
 | 页标题 | 18px / 600 | 同上的 `.title`（外壳 header 只放 `settings.action` 与关闭按钮，标题必须由 section 自绘） |
 | 说明文字 | 13px + `--dsw-alias-label-tertiary` | 同上的 `.intro` |
 | 输入控件 | `border:.5px` + `radius-md`(12px) + `bg-layer-1`，聚焦改边框色 | `@deepseek-ai/dsh-client-ui-primitives/lib/Input.module.css` 的 `.wrap` / `.wrap:focus-within` |
-| 卡片（版本行） | `border:.5px` + `radius-md` + `settings-card-fill/stroke` | 原生 `.card` 用 `settings-card-stroke`（= `border-l4`）；发丝边比 1px 更接近原生 |
-| 悬停 / 破坏性 | `interactive-bg-hover` / `state-error-primary` + `interactive-bg-hover-danger` | 前者是原生交互填充；原生 `Button` **没有** danger 变体，破坏性靠颜色而非变体 |
+| 操作按钮尺寸 | `Button` **默认尺寸**（不传 `size`）= 36px / `radius-md`(12px) / 14px·22px / `padding:0 14px` / `gap:4px` | `Button.module.css` 的 `.md`；原生设置页的 `.linkButton`（`dsh-client-ui-settings-account`）就是这套值，其 README 也写明「用量与充值链接与**标准 Button 尺寸**一致」。传 `size="sm"` 会变成 28px / `radius-sm` / 12px 字 —— 一眼就不像原生 |
+| 卡片（版本行） | `border:.5px` + `radius-xl`(20px) + `padding:12px 16px` + `settings-card-fill/stroke` | 原生 `.card` / `.balanceCard` 的原值；发丝边比 1px 更接近原生 |
+| 操作组间距 | `gap:10px` | 原生 `.links{flex-wrap:wrap;justify-content:flex-end;gap:10px}` |
+| 分隔线 | `border-top:.5px solid var(--dsw-alias-border-l2)` | 原生 `.divider`（比 1px 更细） |
+| 状态标签 | 直接用 `Tag`，**不改它的字号** | `Tag.module.css` 开头写着「Capsule geometry is fixed: a tag reads as one size everywhere, and only its palette varies」—— 几何是原语的固定契约（11px/17px、胶囊、`padding:1px 8px`），只该换 `tone` |
+| 悬停 | `interactive-bg-hover` | 原生交互填充；原生 `Button` **没有** danger 变体，`Modal` 页脚也只是 `outline`(取消) + `primary`(确认)，所以删除按钮**不染红**，破坏性靠行内二次确认兜 |
 | 排版 / 圆角 / 代码字体 | `--dsw-font-*` 复合值、`--dsw-radius-*`、`--ds-font-family-code` | `@deepseek-ai/dsh-client-ui-theme/lib/client.js` 的 `base_css_default`（共 408 个 token）。`--dsw-font-xs-13` 这类复合值可直接写在 `font:` 上（原生自己也这么用） |
 | 相对时间 | `relativeTime()` 只给 `{unit,n}` 分桶，措辞留在本插件的字典 | 原生把「数据分桶」与「文案归属」分开；绝对时间仍由 `formatTime()` 提供给「最后修改」 |
 | 体积 | `fileSizeText()` | 原生字节文案（`1.6KB` 这一族） |
 
 **踩过的坑**：CSS 里写错 token 名（例如 `--dsw-alias-label-quaternary`）**不会报错**，`var()` 静默失效、退回继承值 —— 界面照样能渲染，只是不对。所以 `test/client-render.test.mjs` 有一条测试从 asar 里的主题包**重新提取权威 token 名单**，断言束用到的每个 `var(--dsw-*)` / `var(--ds-*)` 都真实存在。
 
-同理，原语（`Button` / `Tag` / `PathLabel` / `relativeTime` / `fileSizeText` / 图标）一个都不能直接 `primitives.X`：束只能拿到种子词导出的名字，名字缺失就是整页白屏。全部经 `pick(name, fallback)` 取，并有一条测试在**原语整个缺席**（`primitives:'none'`）时仍要求整页正常渲染。
+同理，原语（`Button` / `Tag` / `PathLabel` / `relativeTime` / `fileSizeText`）一个都不能直接 `primitives.X`：束只能拿到种子词导出的名字，名字缺失就是整页白屏。全部经 `pick(name, fallback)` 取，并有一条测试在**原语整个缺席**（`primitives:'none'`）时仍要求整页正常渲染。
+
+还要注意：`Tag` 挂的是 **`data-tone`**（`Tag.module.css` 选择 `.tag[data-tone='…']`），不是 `data-tag`。测试替身里写错这个名字不会让任何断言失败 —— 因为断言也是照替身写的，属于自我印证；把渲染结果配上真实 CSS 一看就露馅。这是 `tools/visual-preview.mjs` 存在的理由之一。
+
+### 为什么需要视觉预览（第五个坑：测试全绿但和原生不一致）
+
+`npm test` 只能回答「结构对不对、原语调没调到、token 存不存在」。**「按钮是不是原生那个尺寸」它答不了。** 本插件就把原生 36px 的 `Button` 传成了 `size="sm"`，48 项测试全过，屏幕上却和原生一眼不一致。
+
+`npm run preview` 补上这一环：它把**真实渲染树**序列化成 HTML，配上运行时的真实 CSS（408 个 `:root` token + primitives 的 `Button/Tag/Input.module.css` + 原生设置页的 `.linkButton` 作对照物 + 本束现取的 `.dsp-*`），再用本机 Chromium 内核浏览器截图。
+
+两个必须遵守的细节：
+
+| 细节 | 原因 |
+|---|---|
+| 必须 `--force-device-scale-factor=2` | 原生大量用 `0.5px` 发丝边，**1x 下会渲染成 0 像素**，看起来「边框全丢了」，会得出错误结论 |
+| token 取**首个**定义 | 主题包先给亮色基础主题、再给暗色覆盖，取最后一个会得到暗色界面 |
+| `:root` 过滤不可靠 | token 定义并不都在 `:root{…}` 字面量里；按 `--dsw-` 从全部 CSS 字面量里重建才能拿到完整的 408 个（只按 `:root` 过滤只能拿到 29 个，`var()` 大面积失效） |
 
 ## 依赖设计（关键，改之前先读）
 
@@ -182,10 +203,10 @@ pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.te
 |---|---|---|
 | `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
 | `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
-| `test/client-render.test.mjs` | 10 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的原生结构、时间走 `relativeTime`、体积走 `fileSizeText`、id 走 `Tag`、三个操作按钮带原生图标、**原语整个缺席时仍能渲染**（兜底文案与 `<button>`）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、不写死颜色与字体栈且不重复外壳内边距、类名与样式双向一致（无死样式） |
+| `test/client-render.test.mjs` | 11 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的原生结构、时间走 `relativeTime`、体积走 `fileSizeText`、id 走 `Tag`（`data-tone`）、**按钮不传 `size`/`icon`**（传了就会偏离原生标准尺寸）、**原语整个缺席时仍能渲染**（兜底文案、`<button>` 与 variant 语义）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、样式数值与原生 Button / 卡片规范逐项一致、不写死颜色与字体栈且不重复外壳内边距、类名与样式双向一致（无死样式） |
 | `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
 
-合计 47 项。
+合计 48 项。
 
 两个 helper 支撑上面这些用例：
 
@@ -194,7 +215,7 @@ pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.te
 | `test/helpers/client-bundle-harness.mjs` | 在隔离 vm 里求值客户端束，并提供**按真实规则校验**的假 `$mount`（保留名、strict codec、端点不重复），任何一条不过都像真网关那样拒绝挂载 |
 | `test/helpers/gateway-reserved-names.mjs` | 命名空间服务保留名快照 + `assertMethodAvailable`，以及从 DSH 的 `app.asar` **重新推导**保留名的函数 |
 | `test/helpers/asar.mjs` | 读 `app.asar` 内单文件的最小工具（`openAsar` / `DSH_ASAR_PATH`），上面两个 helper 共用 |
-| `test/helpers/theme-tokens.mjs` | 从主题包**重新提取**权威设计 token 名单（`themeTokenNames()`）。主题包的 CSS 是 JS 字符串字面量且字体名带转义引号，必须按 JS 字符串规则扫描，简单的 `"[^"]*"` 正则会静默漏掉大量 token |
+| `test/helpers/theme-tokens.mjs` | 从主题包**重新提取**权威设计 token：名单（`themeTokenNames()`）与取值（`themeTokenValues()` / `themeTokenCss()`）。主题包的 CSS 是 JS 字符串字面量且字体名带转义引号，必须按 JS 字符串规则扫描，简单的 `"[^"]*"` 正则会静默漏掉大量 token |
 
 `manifest-parity` 需要一个 `@deepseek-ai/dsh-typert-protocol` 替身才能 import 宿主半区（真实包 import 了本插件故意不装的 cordis），用 `node:module` 的 `registerHooks` 把该 specifier 重定向到 `test/fixtures/typert-protocol-stub.mjs`。本机没装 DSH 时，「保留名快照与源码一致」与「token 真实存在」这两条会自动 skip。
 

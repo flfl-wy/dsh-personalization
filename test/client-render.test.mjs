@@ -86,8 +86,8 @@ test('版本行的相对时间与体积走原生原语', async () => {
     assert.match(text, /1\.6KB/, '体积应由原生 fileSizeText 渲染')
     assert.match(text, new RegExp(VERSION_ID))
 
-    // id 走原生 Tag（替身带 data-tag），不是裸 <code>。
-    const idTags = hostsOf(page.tree, 'span').filter((node) => node.props['data-tag'] === 'outline')
+    // id 走原生 Tag（真实 Tag 挂的是 data-tone），不是裸 <code>。
+    const idTags = hostsOf(page.tree, 'span').filter((node) => node.props['data-tone'] === 'outline')
     assert.equal(idTags.length, 1)
     assert.equal(textOf(idTags[0]), VERSION_ID)
 
@@ -95,18 +95,19 @@ test('版本行的相对时间与体积走原生原语', async () => {
     assert.ok(!empty.some((line) => /还没有历史版本/.test(line)), '有版本时不该显示空态')
 })
 
-test('三个操作按钮都带上了原生图标', async () => {
+test('按钮走原生 Button 的默认尺寸，且不额外挂图标', async () => {
     const { page } = await mountWithOneVersion()
-    const labelOf = (node) => textOf(node)
+    const buttons = hostsOf(page.tree, 'button')
+    assert.ok(buttons.length >= 4, `页面级与行级按钮都应渲染，实际 ${buttons.length}`)
 
-    const restore = hostsOf(page.tree, 'button').find((node) => labelOf(node).includes('回滚'))
-    const remove = hostsOf(page.tree, 'button').find((node) => labelOf(node).includes('删除'))
-    assert.ok(restore !== undefined && remove !== undefined, '历史版本行应有回滚与删除')
-
-    const icons = hostsOf(page.tree, 'svg').map((node) => node.props['data-icon'])
-    assert.ok(icons.includes('unarchive'), '回滚按钮应带原生图标')
-    assert.ok(icons.includes('trash'), '删除按钮应带原生图标')
-    assert.ok(icons.includes('refresh'), '刷新按钮应带原生图标')
+    // 原生设置页的操作按钮是 .md（36px / radius-md / 14px），传 size 就会退化成 .sm（28px / radius-sm / 12px）。
+    // 原生「查询用量 / 充值」那一行也不带图标，所以不传 icon。
+    for (const button of buttons) {
+        assert.equal(button.props['data-size'], undefined, '不应传 size，否则偏离原生标准 Button 尺寸')
+        assert.equal(button.props['data-has-icon'], undefined, '原生设置页操作行是纯文字按钮')
+    }
+    assert.ok(buttons.some((node) => node.props['data-variant'] === 'primary'), '保存 / 确认走 primary')
+    assert.ok(buttons.some((node) => node.props['data-variant'] === 'outline'), '次级操作走 outline')
 })
 
 test('原语整个缺席时整页仍能渲染，并退回兜底文案', async () => {
@@ -116,8 +117,10 @@ test('原语整个缺席时整页仍能渲染，并退回兜底文案', async ()
     assert.match(text, /个性化/, '标题要在')
     assert.match(text, /1635 B/, 'fileSizeText 缺席时退回字节原文')
     assert.ok(!/分钟前/.test(text), 'relativeTime 缺席时不该出现相对时间文案')
-    assert.equal(hostsOf(page.tree, 'svg').length, 0, '图标组件缺席时不画 svg')
-    assert.ok(hostsOf(page.tree, 'button').length >= 3, '兜底 Button 仍然渲染成 <button>')
+    const buttons = hostsOf(page.tree, 'button')
+    assert.ok(buttons.length >= 3, '兜底 Button 仍然渲染成 <button>')
+    assert.ok(buttons.some((node) => node.props['data-variant'] === 'outline') &&
+        buttons.some((node) => node.props['data-variant'] === 'primary'), '兜底按钮保留 variant 语义')
 
     const fallbackTag = hostsOf(page.tree, 'span').find((node) => node.props['data-tone'] === 'outline')
     assert.ok(fallbackTag !== undefined && textOf(fallbackTag) === VERSION_ID, '兜底 Tag 保留 data-tone 与内容')
@@ -212,4 +215,31 @@ test('样式类名与渲染代码双向一致（没有死样式，也没有裸�
     const used = new Set([...rest.matchAll(/(dsp-[a-z0-9-]+)/g)].map((match) => match[1]))
     const naked = [...used].filter((name) => !defined.has(name)).sort()
     assert.deepEqual(naked, [], `用到但没有样式：${naked.join(', ')}`)
+})
+
+test('样式采用的尺寸与原生 Button / 设置卡片规范逐项一致', async () => {
+    const { style } = await styleSource()
+
+    // 原生 .card（dsh-client-ui-settings-account）：
+    //   border:.5px solid var(--dsw-alias-settings-card-stroke); border-radius:var(--dsw-radius-xl);
+    //   background:var(--dsw-alias-settings-card-fill); padding:12px 16px
+    assert.match(style, /\.dsp-version\{[^}]*border:\.5px solid var\(--dsw-alias-settings-card-stroke\)/)
+    assert.match(style, /\.dsp-version\{[^}]*border-radius:var\(--dsw-radius-xl\)/)
+    assert.match(style, /\.dsp-version\{[^}]*var\(--dsw-alias-settings-card-fill\)/)
+    assert.match(style, /\.dsp-version\{[^}]*padding:12px 16px/)
+
+    // 原生 .links{gap:10px}（操作组内间距）
+    assert.match(style, /\.dsp-actions\{[^}]*gap:10px/)
+
+    // 原生 .divider{border-top:.5px solid var(--dsw-alias-border-l2)}
+    assert.match(style, /\.dsp-group\{[^}]*border-top:\.5px solid var\(--dsw-alias-border-l2\)/)
+
+    // 输入控件照 Input.module.css：.5px 发丝边 + radius-md + bg-layer-1
+    assert.match(style, /\.dsp-editor\{[^}]*border:\.5px solid var\(--dsw-alias-border-l4\)/)
+    assert.match(style, /\.dsp-editor\{[^}]*border-radius:var\(--dsw-radius-md\)/)
+    assert.match(style, /\.dsp-editor\{[^}]*var\(--dsw-alias-bg-layer-1\)/)
+
+    // 原生页面：标题 18px/600，页宽 720px（agent-preset 的 .section / .title）
+    assert.match(style, /\.dsp-title\{[^}]*font-size:18px/)
+    assert.match(style, /\.dsp-title\{[^}]*font-weight:600/)
 })

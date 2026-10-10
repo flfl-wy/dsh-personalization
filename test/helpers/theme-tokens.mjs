@@ -57,3 +57,33 @@ export function themeTokenNames(archive = DSH_ASAR_PATH) {
         asar.close()
     }
 }
+
+/**
+ * 取出权威 token 的取值。
+ *
+ * 取**首个**定义：主题包先给基础（亮色）主题、再给暗色覆盖，取最后一个会得到暗色。
+ * @param archive - `app.asar` 路径。
+ * @returns token 名 → 取值。
+ */
+export function themeTokenValues(archive = DSH_ASAR_PATH) {
+    const asar = openAsar(archive)
+    try {
+        const css = cssLiteralsOf(asar.read(THEME_CLIENT_PATH))
+        const values = new Map()
+        for (const match of css.matchAll(/(--dsw-[a-z0-9-]+|--ds-[a-z0-9-]+)\s*:\s*([^;}]+)/g)) {
+            if (!values.has(match[1])) values.set(match[1], match[2].trim())
+        }
+        return values
+    } finally {
+        asar.close()
+    }
+}
+
+/**
+ * 把权威 token 拼成一份可用的 `:root{…}`，供静态预览复用。
+ * @param archive - `app.asar` 路径。
+ */
+export function themeTokenCss(archive = DSH_ASAR_PATH) {
+    const pairs = [...themeTokenValues(archive)].map(([name, value]) => `${name}:${value}`)
+    return `:root{${pairs.join(';')}}`
+}

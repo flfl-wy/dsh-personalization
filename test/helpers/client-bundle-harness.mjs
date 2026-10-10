@@ -192,15 +192,19 @@ function nativeLikePrimitives(React) {
             return React.createElement('button', {
                 'data-variant': variant,
                 'data-size': size,
-                className,
+                'data-has-icon': leading === undefined ? undefined : true,
+                // 类名照真实 Button.module.css（.button / .md / .outline …），
+                // 这样这份 markup 能直接配真实 CSS 渲染出静态预览。
+                className: ['button', size ?? 'md', variant ?? 'ghost', className].filter(Boolean).join(' '),
                 disabled: rest.disabled,
                 onClick: rest.onClick,
-                children: [leading ?? null, children],
+                children: leading === undefined ? children : [React.createElement('span', { className: 'icon' }, leading), children],
             })
         },
         Toast: function Toast({ text, tone }) { return React.createElement('div', { 'data-toast': tone }, text) },
-        Tag: function Tag({ tone, className, children }) {
-            return React.createElement('span', { 'data-tag': tone, className }, children)
+        Tag: function Tag({ tone = 'outline', className, children }) {
+            // 属性名必须与真实 Tag 一致：Tag.module.css 选择的是 .tag[data-tone='…']
+            return React.createElement('span', { 'data-tone': tone, className: ['tag', className].filter(Boolean).join(' ') }, children)
         },
         PathLabel: function PathLabel({ path, className }) { return React.createElement('code', { className }, path) },
         relativeTime: (at, now) => {
