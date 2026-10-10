@@ -10,22 +10,49 @@
 | 目标文件 | `dshHomePath('AGENTS.md')`，即 `$DSH_HOME/AGENTS.md`，默认 `~/.dsh/AGENTS.md` |
 | 读取 | `personalization/read` —— 文件不存在时返回空内容 + `exists: false`，不报错 |
 | 保存 | `personalization/save` —— 覆盖前先复制为 `AGENTS.md.bak-YYYYMMDD-HHmmss`，再写入新内容 |
-| 路径来源 | 完全由宿主解析。客户端只能提交文本、不能提交路径，因此这个页面永远只改这一个文件 |
+| 历史版本 | `personalization/list` —— 枚举同目录全部 `.bak-*`，新的在前，只返回元数据 |
+| 查看版本 | `personalization/readVersion` —— 按 id 取某个备份的完整内容 |
+| 回滚 | `personalization/restore` —— 把某版本写回主文件；**替换前先把当前内容另存为新版本** |
+| 删除版本 | `personalization/remove` —— 只删 `.bak-*`，主文件不受影响 |
+| 路径来源 | 完全由宿主解析。客户端只能提交文本或不透明版本 id，两者都不携带路径 |
 | 读取失败 | 读取没成功就禁用编辑与保存，避免把文件清空成一个空文档 |
 
 `AGENTS.md` 会被注入每个新会话的系统提示，所以写入通道走的是 DSH 自己的 Typert Remote Gateway（带会话校验），而不是裸 HTTP 路由。
+
+## 历史版本
+
+版本就是保存时留下的时间戳备份，没有额外的索引文件 —— 目录里有什么就是什么，用外部工具删掉也不会让插件错乱。
+
+| 关注点 | 做法 |
+|---|---|
+| 版本 id | `YYYYMMDD-HHmmss`；同一秒内的第 2、3… 个版本追加 `-2`、`-3` |
+| 为什么需要后缀 | 没有它，同一秒内的第二次保存会覆盖上一份备份，历史版本被静默吞掉（`nextBackupPath` 专门规避） |
+| id → 路径 | 只经 `versionPathFor()` 一个入口，正则 `^\d{8}-\d{6}(?:-\d+)?$` 保证 id 里不可能出现 `/` 或 `..`，因此客户端无法越出 `$DSH_HOME` |
+| 回滚可逆 | 回滚走的是同一条写入路径，所以「回滚前的当前内容」也会被存成一份新版本；回滚动作本身可以再回滚 |
+| 删源版本 | 回滚不删除源版本，历史链条保持完整 |
+| 符号链接 | `listVersions` 用 `lstat` 只认普通文件；符号链接既不列出，也不能被 `readVersion` / `removeVersion` 操作 |
+| 体积上限 | 单个版本超过 `MAX_CONTENT_LENGTH`（1 MiB）时拒绝读取，不把大文件读进内存 |
+| 未保存改动 | 编辑器 dirty 时禁用「回滚」——回滚会重新读取主文件，否则会冲掉编辑中的内容（查看与删除不受影响） |
+| 二次确认 | 回滚与删除都要行内二次确认；不使用原生 `confirm()`（宿主窗口可能禁用它，且它阻塞） |
+
+投放顺序上也做了取舍：`list` 只返回元数据、内容按 id 单独取，所以几百个版本也不会让列表请求变重。
+
 
 ## 结构
 
 ```
 lib/index.js       宿主半区：TypertRemoteService('personalization') + ctx.typert.register(MANIFEST)
-lib/agents-file.js 纯文件逻辑：读取 / 备份 / 写入（无 DSH 运行时依赖，可单独测试）
+lib/agents-file.js 纯文件逻辑：读取 / 备份 / 写入 + 历史版本枚举·读取·回滚·删除（无 DSH 运行时依赖，可单独测试）
 lib/client.js      浏览器半区：window.__ModuleLoader__.load 懒加载 CJS 束，注册 settings.section
 cordis.patch.yml   Bundle patch：把裸包名插入为 Loader 行（客户端半区靠裸包名挂靠）
-test/              agents-file 往返测试 + 客户端束契约测试
+test/helpers/      客户端束 vm 装载体（两个测试文件共用）
+test/fixtures/     dsh-typert-protocol 测试替身（见 manifest-parity 测试的说明）
+test/              agents-file 往返测试 + 客户端束契约测试 + 跨半区契约测试
 ```
 
 两端各持一份描述符清单（宿主 `MANIFEST.invocations` / 客户端 `CONTRIBUTION.descriptors`），字段必须一致。客户端束是手写的，不经构建；它只能 `require` 外壳种子词：`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`。
+
+这份「必须一致」以前只靠人工纪律维持，现在由 `test/manifest-parity.test.mjs` 断言：两半区的端点集合与每个端点的 `id` / `service` / `namespace` / `method` / receiver kind / 参数 `name`·`wire`·`source` / codec `mode`·`typeSymbol` 必须逐字段相同。它同时按 `dsh-typert-loader` 的 `requireInvocation` 规则校验 `MANIFEST`（端点与 id 不得重复 —— 重复会被整批拒绝），并用真实的 `lib/agents-file.js` 返回值去 parse 每个结果 schema。
 
 ## 依赖设计（关键，改之前先读）
 
@@ -73,6 +100,20 @@ const read = async () => { await mounted; return ctx.get("remote.personalization
 
 方法返回值是 `RemoteResult`：`{ ok: true, value }` 或 `{ ok: false, error: { code, message } }`，调用方必须自己判 `ok`。
 
+### 入参与出参的校验边界（`packages/.../dsh-api-gateway/lib/index.js`）
+
+| 环节 | 实际行为 |
+|---|---|
+| 入参字段集合 | `assertExactArguments()`：`args` 必须是 plain object，字段必须与 descriptor 的 `parameters` **完全一致**；多字段、少字段都报 `gateway/arguments-invalid` |
+| 入参取值 | `decode()` 调 `codec.create().parse(value)` —— **zod 真的会跑**，类型不符报 `gateway/input-invalid` |
+| 出参 | `encodeRpcResult()` 是 `codec.encode?.(value) ?? value`：本插件的 codec 没定义 `encode`，所以**结果完全不被校验**，只是原样过网 |
+| 宿主抛错 | `rpcFailure()` 包成 `{ ok: false, error: { code: 'gateway/internal', message } }`，`message` 直接进界面 |
+
+推论：报错文案来自宿主抛出的 `Error.message`（见 `agents-file.js` 的 `does not exist` 等），所以那里要写人话；而结果形状没有任何运行时兜底，只能靠 `test/manifest-parity.test.mjs` 拿真实返回值去 parse schema。
+
+注意 zod v4 的 `z.object` 默认**剥离**未知字段而不是报错 —— 多字段是被上表的 `assertExactArguments` 挡住的，不是 schema。
+
+
 ### 改动怎么生效
 
 | 半区 | 生效方式 |
@@ -91,13 +132,18 @@ curl -s "http://127.0.0.1:19387/plugins/??dsh-personalization/client.js&rev=<rev
 
 ```sh
 cd ~/Documents/deepseek-harness/dsh-personalization
-pnpm test          # 等价于 node --test test/agents-file.test.mjs test/client-bundle.test.mjs
+pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.test.mjs test/manifest-parity.test.mjs
 ```
 
-- `test/agents-file.test.mjs`：把 `DSH_HOME` 指向临时目录，覆盖「首次写入不备份 / 二次写入先备份 / 备份内容等于上一版 / 超长被拒且不落盘 / 非字符串被拒」等 8 项。**不碰真实 `~/.dsh/AGENTS.md`。**
-- `test/client-bundle.test.mjs`：6 项。用假 `window.__ModuleLoader__` 与假种子词求值客户端束，验证导出的 `apply` / `inject`、`settings.section` 注册参数、`read`/`save` 引用稳定性、`$mount` 失败时降级为页面内错误，以及命名空间必须走 `ctx.get("remote.<name>")` 的回归测试。
+| 文件 | 项数 | 覆盖 |
+|---|---|---|
+| `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
+| `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
+| `test/manifest-parity.test.mjs` | 3 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
 
-合计 14 项。
+合计 35 项。
+
+`manifest-parity` 需要一个 `@deepseek-ai/dsh-typert-protocol` 替身才能 import 宿主半区（真实包 import 了本插件故意不装的 cordis），用 `node:module` 的 `registerHooks` 把该 specifier 重定向到 `test/fixtures/typert-protocol-stub.mjs`。
 
 ## 安装
 
@@ -122,8 +168,9 @@ pnpm add "dsh-personalization@link:$HOME/Documents/deepseek-harness/dsh-personal
 装好重启后：
 
 1. 插件管理器的 bundle 列表里，`dsh-personalization` 的 `rows[0]` 应带上 `entryId`（形如 `include:personalization`）。`entryId` 只在**行已进入运行中的 Loader** 时才出现，没有它就说明还没重启。
-2. 设置面板里应出现「个性化」，能读到 `~/.dsh/AGENTS.md` 现状（本机 1635 字节）。
-3. 改一行保存，检查同目录出现 `AGENTS.md.bak-<YYYYMMDD-HHmmss>`，且其内容等于改动前那一版。
+2. 设置面板里应出现「个性化」，能读到 `~/.dsh/AGENTS.md` 现状，下方能看到「历史版本」列表（本机当时 4 份备份，最新一份 1635 字节）。
+3. 改一行保存，检查同目录出现 `AGENTS.md.bak-<YYYYMMDD-HHmmss>`，且其内容等于改动前那一版；历史列表应立刻多出一行。
+4. 点某行的「查看」应展开该版本内容；「删除」应经过二次确认后只删掉 `.bak-*`。
 
 宿主半区的纯逻辑可以脱离 DSH 单独验证（用 `DSH_HOME` 指向临时目录，不碰真实文件）：
 
@@ -136,9 +183,21 @@ DSH_HOME=/tmp/dsp-check node -e '
 '
 ```
 
+只读地看一眼真实环境的历史版本（`listVersions` 只做 `readdir` / `lstat`，不改任何文件）：
+
+```sh
+cd ~/Documents/deepseek-harness/dsh-personalization
+node -e '
+  const m = await import("./lib/agents-file.js");
+  console.log(JSON.stringify(await m.listVersions(), null, 2));
+'
+```
+
 ## 已知限制
 
 - 只编辑全局 AGENTS.md；项目级 `<workspace>/AGENTS.md` 尚未接入。
-- 页面只做「读取 / 编辑 / 保存 + 保存前备份」。恢复某个备份、另存为、字数统计等尚未提供。
-- 保存没有并发保护：两个窗口同时编辑时，后保存的覆盖先保存的。
-- `lib/client.js` 是手写束，没有 TS 类型检查，靠 `test/client-bundle.test.mjs` 与真实运行兜底。
+- 页面只做「读取 / 编辑 / 保存 + 历史版本（查看 / 回滚 / 删除）」。版本间 diff、另存为、字数统计、清空全部历史尚未提供。
+- 历史版本**没有自动上限**，也不会自动清理；长期使用请用「删除」手动收拾。
+- 回滚没有 diff 预览：确认框只给出时间与 id，用户看不到内容差异（可以先「查看」再决定）。
+- 保存与回滚都没有并发保护：两个窗口同时操作时，后写入的覆盖先写入的。`nextBackupPath` 的「查名字 → 复制」之间也有极窄的竞态窗口，理论上同一秒内两个进程可能撞名。
+- `lib/client.js` 是手写束，没有 TS 类型检查，靠三个测试文件与真实运行兜底。

@@ -2,10 +2,11 @@
  * 客户端束的形状与注册测试。
  *
  * 用一个假的 `window.__ModuleLoader__` + 假的 require 把 `lib/client.js` 当作
- * 浏览器里那样求值，验证：
+ * 浏览器里那样求值（装载体见 `helpers/client-bundle-harness.mjs`），验证：
  *   - 只注册 factory、导出 `apply` / `inject`
  *   - `apply` 注册字典、$mount 消费者贡献、把设置页注册进 settings.section
- *   - `inject` 面拿到的 read/save 引用稳定（否则 React 依赖会无限重跑）
+ *   - 消费者描述符覆盖全部六个端点（与宿主 manifest 的逐字段一致性见 manifest-parity.test.mjs）
+ *   - `inject` 面拿到的六个方法引用稳定（否则 React 依赖会无限重跑）
  *   - $mount 失败时降级为页面内的错误提示而不是整块崩掉
  *
  * 运行：`node --test test/`
@@ -13,104 +14,18 @@
 
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import vm from 'node:vm'
 import test from 'node:test'
+import { clientPath, evaluateBundle, plain } from './helpers/client-bundle-harness.mjs'
 
-const here = dirname(fileURLToPath(import.meta.url))
-const clientPath = join(here, '..', 'lib', 'client.js')
-
-/**
- * 在隔离的 vm 上下文里求值客户端束，返回被注册的模块导出与观察记录。
- * @param options.mount - 可替换的 $mount 行为。
- * @returns 束导出、假上下文、以及 slots/locale 的调用记录。
- */
-async function evaluateBundle({ mount } = {}) {
-    const source = await readFile(clientPath, 'utf8')
-    const records = { loaded: [], mounted: [], getKeys: [], dicts: [], slots: [], injections: [] }
-
-    const seed = {
-        'react': {
-            createElement: (...args) => ({ type: args[0], props: args[1] ?? {}, children: args.slice(2) }),
-            useState: (value) => [typeof value === 'function' ? value() : value, () => {}],
-            useCallback: (fn) => fn,
-            useEffect: () => {},
-        },
-        '@deepseek-ai/dsh-client-ui-primitives': {
-            Button: function Button() { return null },
-            Toast: function Toast() { return null },
-        },
-    }
-
-    const head = { children: [], appendChild(node) { this.children.push(node) } }
-    const sandbox = {
-        console,
-        setTimeout,
-        clearTimeout,
-        Date,
-        JSON,
-        Error,
-        Node: class Node {},
-        document: {
-            head,
-            createElement: (tag) => ({ tag, dataset: {}, textContent: '', remove() {} }),
-            querySelector: () => null,
-        },
-        window: {
-            __ModuleLoader__: {
-                load(registration) { records.loaded.push(registration) },
-            },
-        },
-    }
-    sandbox.window.document = sandbox.document
-    const context = vm.createContext(sandbox)
-    vm.runInContext(source, context, { filename: clientPath })
-
-    assert.equal(records.loaded.length, 1, 'client.js 必须恰好注册一个模块')
-    const registration = records.loaded[0]
-    const exports = registration.factory((specifier) => {
-        if (seed[specifier] === undefined) throw new Error(`unexpected require(${specifier})`)
-        return seed[specifier]
-    })
-
-    const namespace = {
-        read: async () => ({ ok: true, value: { path: '/tmp/AGENTS.md', exists: true, content: 'hi', bytes: 2, mtimeMs: 1 } }),
-        save: async () => ({ ok: true, value: { path: '/tmp/AGENTS.md', bytes: 3, mtimeMs: 2, backupPath: null } }),
-    }
-    // 命名空间服务由挂载过程安装：默认 mount 会装上，替换 mount（例如失败用例）则没有。
-    let namespaceInstalled = mount === undefined
-    const ctx = {
-        effect(callback, label) { records.injections.push({ label, dispose: callback() }) },
-        locale: {
-            register(ns, dicts) { records.dicts.push({ ns, dicts }) },
-            bind(ns) { return (key) => records.dicts.find((entry) => entry.ns === ns)?.dicts.zh[key] ?? key },
-        },
-        get(key) {
-            records.getKeys.push(key)
-            // 真实的 api-gateway 把命名空间注册成名为 `remote.<namespace>` 的 Cordis 服务
-            // （`remoteServiceKey`），而不是 remote 对象上的同名属性 —— 严格照此仿真，
-            // 否则「在 remote 上找属性」这种错误写法会被测试放过。
-            if (key === 'remote') {
-                return {
-                    $mount: mount ?? (async (contribution) => {
-                        records.mounted.push(contribution)
-                        namespaceInstalled = true
-                        return () => {}
-                    }),
-                }
-            }
-            if (key === 'remote.personalization') return namespaceInstalled ? namespace : undefined
-            return undefined
-        },
-        slots: {
-            inject(name, register) { records.slots.push({ name }); return register() },
-            register(options, component) { records.slots.push({ options, component }); return () => {} },
-        },
-    }
-
-    return { registration, exports, ctx, records, namespace }
-}
+/** 宿主 manifest 与客户端贡献都必须声明的端点集合（`<namespace>/<method>`）。 */
+const EXPECTED_ENDPOINTS = [
+    'personalization/read',
+    'personalization/save',
+    'personalization/list',
+    'personalization/readVersion',
+    'personalization/restore',
+    'personalization/remove',
+]
 
 test('束导出 apply / inject，且 inject 是宿主服务键数组', async () => {
     const { registration, exports } = await evaluateBundle()
@@ -131,6 +46,11 @@ test('apply 注册字典、挂载贡献并注册 settings.section', async () => 
             assert.equal(typeof value, 'string', `${key} 必须是字符串，locale 字典不接受函数`)
         }
     }
+    assert.deepEqual(
+        Object.keys(records.dicts[0].dicts.zh).sort(),
+        Object.keys(records.dicts[0].dicts.en).sort(),
+        '中英文字典的 key 必须一一对应',
+    )
 
     const section = records.slots.find((entry) => entry.options !== undefined)
     assert.ok(section !== undefined, '必须注册一个插槽条目')
@@ -143,27 +63,89 @@ test('apply 注册字典、挂载贡献并注册 settings.section', async () => 
 
     const injected = section.options.inject()
     assert.equal(typeof injected.t, 'function')
-    assert.equal(typeof injected.read, 'function')
-    assert.equal(typeof injected.save, 'function')
+    for (const method of ['read', 'save', 'list', 'readVersion', 'restore', 'remove']) {
+        assert.equal(typeof injected[method], 'function', `inject 面必须提供 ${method}`)
+    }
     assert.equal(injected.remoteError, null)
 
     assert.equal(records.injections.length, 2, '字典与样式各一个 effect（manifest 在宿主半区）')
     assert.equal(typeof dispose, 'function', 'apply 必须返回卸载函数')
 })
 
-test('inject 面拿到的 read / save 引用在多次读取间保持稳定', async () => {
+test('消费者描述符覆盖全部六个端点，且参数形状正确', async () => {
+    const { exports, ctx, records } = await evaluateBundle()
+    await exports.apply(ctx)
+
+    assert.equal(records.mounted.length, 1)
+    const descriptors = records.mounted[0].descriptors
+    assert.equal(descriptors.length, EXPECTED_ENDPOINTS.length)
+
+    const endpoints = plain(descriptors.map((descriptor) => `${descriptor.namespace}/${descriptor.method}`)).sort()
+    assert.deepEqual(endpoints, [...EXPECTED_ENDPOINTS].sort())
+    assert.equal(new Set(endpoints).size, endpoints.length, '端点不得重复（宿主会整批拒绝）')
+    assert.equal(
+        new Set(descriptors.map((descriptor) => descriptor.id)).size,
+        descriptors.length,
+        'invocation id 不得重复',
+    )
+
+    for (const descriptor of descriptors) {
+        assert.equal(descriptor.service, 'personalization')
+        assert.equal(descriptor.namespace, 'personalization')
+        assert.deepEqual(plain(descriptor.invocation), { kind: 'direct' })
+        // 零参方法必须声明空数组，其余方法一律收一个 `{ id }` 载荷。
+        const expectsPayload = descriptor.method !== 'read' && descriptor.method !== 'list'
+        assert.equal(descriptor.parameters.length, expectsPayload ? 1 : 0, `${descriptor.method} 的参数个数`)
+        if (expectsPayload) {
+            assert.equal(descriptor.parameters[0].name, 'payload')
+            assert.equal(descriptor.parameters[0].wire, 'payload')
+            assert.equal(descriptor.parameters[0].source, 'json')
+        }
+        for (const codec of [descriptor.result, ...descriptor.parameters.map((parameter) => parameter.codec)]) {
+            assert.equal(codec.mode, 'strict')
+            assert.equal(typeof codec.typeSymbol, 'string')
+            assert.equal(typeof codec.create, 'function')
+        }
+    }
+})
+
+test('locale 字典与 t() 引用双向覆盖', async () => {
+    // 两个方向都会出问题：字典里没人用的 key 是死代码；代码里引用了但字典没有的 key
+    // 会直接显示成原始 key 名（locale 的 bind 在缺 key 时回退到 key 本身）。
+    const { exports, ctx, records } = await evaluateBundle()
+    await exports.apply(ctx)
+    const { zh, en } = records.dicts[0].dicts
+    const source = await readFile(clientPath, 'utf8')
+
+    const referenced = new Set()
+    for (const match of source.matchAll(/\bt\("([^"]+)"\)/g)) referenced.add(match[1])
+
+    assert.deepEqual(
+        Object.keys(zh).filter((key) => !referenced.has(key)),
+        [],
+        '字典里有未被任何 t() 引用的死 key',
+    )
+    assert.deepEqual(
+        [...referenced].filter((key) => !Object.hasOwn(zh, key) || !Object.hasOwn(en, key)),
+        [],
+        't() 引用了字典里不存在的 key',
+    )
+})
+
+test('inject 面拿到的六个方法引用在多次读取间保持稳定', async () => {
     const { exports, ctx, records } = await evaluateBundle()
     await exports.apply(ctx)
     const section = records.slots.find((entry) => entry.options !== undefined)
 
     const first = section.options.inject()
     const second = section.options.inject()
-    assert.equal(first.read, second.read, 'read 每次新建会让组件的 useCallback 依赖失效')
-    assert.equal(first.save, second.save, 'save 同理')
+    for (const method of ['read', 'save', 'list', 'readVersion', 'restore', 'remove']) {
+        assert.equal(first[method], second[method], `${method} 每次新建会让组件的 useCallback 依赖失效`)
+    }
     assert.equal(first.t, second.t)
 })
 
-test('read / save 代理到远程命名空间', async () => {
+test('六个方法都代理到远程命名空间，并原样传递载荷', async () => {
     const { exports, ctx, records } = await evaluateBundle()
     await exports.apply(ctx)
     const section = records.slots.find((entry) => entry.options !== undefined)
@@ -176,6 +158,33 @@ test('read / save 代理到远程命名空间', async () => {
     const saveResult = await injected.save({ content: 'new' })
     assert.equal(saveResult.ok, true)
     assert.equal(saveResult.value.backupPath, null)
+
+    const listResult = await injected.list()
+    assert.equal(listResult.ok, true)
+    assert.deepEqual(plain(listResult.value.versions), [])
+
+    const detail = await injected.readVersion({ id: '20261010-085310' })
+    assert.equal(detail.ok, true)
+    assert.equal(detail.value.content, 'old')
+
+    const restored = await injected.restore({ id: '20261010-085310' })
+    assert.equal(restored.ok, true)
+    assert.equal(restored.value.restoredFrom, '20261010-085310')
+
+    const removed = await injected.remove({ id: '20261010-085310' })
+    assert.equal(removed.ok, true)
+    assert.equal(removed.value.id, '20261010-085310')
+
+    // 参数必须原样透传 —— 尤其是 `{ id }`，否则宿主会因为 zod 校验失败而整批报错。
+    // 这里不能用 plain()：零参调用的 payload 是 undefined，JSON 归一化会把它抹掉。
+    assert.deepEqual(records.calls, [
+        { method: 'read', payload: undefined },
+        { method: 'save', payload: { content: 'new' } },
+        { method: 'list', payload: undefined },
+        { method: 'readVersion', payload: { id: '20261010-085310' } },
+        { method: 'restore', payload: { id: '20261010-085310' } },
+        { method: 'remove', payload: { id: '20261010-085310' } },
+    ])
 })
 
 test('命名空间走 ctx.get("remote.<name>")，而不是 remote 上的同名属性', async () => {
@@ -203,8 +212,12 @@ test('命名空间走 ctx.get("remote.<name>")，而不是 remote 上的同名�
     const before = records.getKeys.filter((key) => key === 'remote.personalization').length
     await injected.read()
     await injected.save({ content: 'x' })
+    await injected.list()
+    await injected.readVersion({ id: '20261010-085310' })
+    await injected.restore({ id: '20261010-085310' })
+    await injected.remove({ id: '20261010-085310' })
     const after = records.getKeys.filter((key) => key === 'remote.personalization').length
-    assert.equal(after - before, 2, 'read 与 save 各自重新取一次命名空间服务')
+    assert.equal(after - before, 6, '六个方法各自重新取一次命名空间服务')
 })
 
 test('$mount 失败时降级为页面内错误，而不是抛穿', async () => {
@@ -218,4 +231,5 @@ test('$mount 失败时降级为页面内错误，而不是抛穿', async () => {
     const injected = section.options.inject()
     assert.equal(injected.remoteError, 'gateway offline')
     await assert.rejects(() => injected.read(), /远程服务未就绪|not ready/)
+    await assert.rejects(() => injected.list(), /远程服务未就绪|not ready/)
 })
