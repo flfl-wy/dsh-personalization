@@ -1,23 +1,40 @@
 # dsh-personalization
 
-在 DeepSeek Harness 的 **Settings** 面板里增加一个「个性化 / Personalization」设置页，目前用于编辑全局 `~/.dsh/AGENTS.md`。
+在 DeepSeek Harness 的 **Settings** 面板里增加一个「个性化 / Personalization」设置页，用来编辑 AGENTS.md —— 页面顶部的**作用域**下拉在「全局」与各已注册工作区之间切换。
 
 ## 它做了什么
 
 | 项目 | 行为 |
 |---|---|
 | 设置页入口 | 通过 `settings.section` 插槽注册，导航标题「个性化 / Personalization」，`order: 25` |
-| 目标文件 | `dshHomePath('AGENTS.md')`，即 `$DSH_HOME/AGENTS.md`，默认 `~/.dsh/AGENTS.md` |
+| 作用域 | `{ kind: 'global' }` → `$DSH_HOME/AGENTS.md`；`{ kind: 'workspace', workspaceId }` → `<workspace.path>/AGENTS.md` |
+| 作用域列表 | `personalization/listScopes` —— 全局在前、各工作区在后，带标题、路径与文件状态（`exists` / `bytes` / `mtimeMs`） |
 | 读取 | `personalization/read` —— 文件不存在时返回空内容 + `exists: false`，不报错 |
 | 保存 | `personalization/save` —— 覆盖前先复制为 `AGENTS.md.bak-YYYYMMDD-HHmmss`，再写入新内容 |
-| 历史版本 | `personalization/listVersions` —— 枚举同目录全部 `.bak-*`，新的在前，只返回元数据 |
+| 历史版本 | `personalization/listVersions` —— 枚举**该作用域目录**里的全部 `.bak-*`，新的在前，只返回元数据 |
 | 查看版本 | `personalization/readVersion` —— 按 id 取某个备份的完整内容 |
 | 回滚 | `personalization/restoreVersion` —— 把某版本写回主文件；**替换前先把当前内容另存为新版本** |
 | 删除版本 | `personalization/deleteVersion` —— 只删 `.bak-*`，主文件不受影响 |
-| 路径来源 | 完全由宿主解析。客户端只能提交文本或不透明版本 id，两者都不携带路径 |
+| 路径来源 | 完全由宿主解析（`lib/scopes.js`）。客户端只能提交**不透明工作区 id**、文本或不透明版本 id，三者都不携带路径 |
 | 读取失败 | 读取没成功就禁用编辑与保存，避免把文件清空成一个空文档 |
 
 `AGENTS.md` 会被注入每个新会话的系统提示，所以写入通道走的是 DSH 自己的 Typert Remote Gateway（带会话校验），而不是裸 HTTP 路由。
+
+## 作用域（全局 / 工作区）
+
+`dsh-agent-instructions` 加载的是「全局文件 + 项目指令链」：先 `$DSH_HOME/AGENTS.md`，再从项目根（`.git` 标记）到会话工作目录逐级取候选文件（默认 `AGENTS.md` / `CLAUDE.md`）。所以**工作区自己的 `<workspace>/AGENTS.md` 确实会进上下文**，编辑它不是摆设。
+
+| 关注点 | 做法 |
+|---|---|
+| 路径解析 | 只经 `resolveScopeFile(scope, registry)` 一个入口：全局走 `dshHomePath('AGENTS.md')`，工作区走 `workspaceRegistry.get(id).path` + `AGENTS.md` |
+| 越权防护 | 客户端交的是**工作区 id**，不是路径；id 查不到就**抛错**，绝不退回默认文件（静默退回会把编辑写进别的文件，是最坏的一种失败） |
+| 历史版本隔离 | 每个作用域各自目录里的 `.bak-*`；`listVersions` / `readVersion` / `restoreVersion` / `deleteVersion` 全部按作用域解析 |
+| id → 路径唯一入口 | `versionPathFor(id, file)` 在**该作用域主文件所在目录**里拼路径，非法 id 一律 `RangeError`，因此 id 无法越出该目录 |
+| `versionIdOf` 的边界 | 它只比较**文件名**，不带目录 —— 作用域隔离不靠它，靠 `versionPathFor`。它只用于 `listVersions`（目录已由 `file` 选定）与刚生成的 `backupPath` |
+| 注册表缺失时 | `listScopes` 退化成「只有全局」（读全局不依赖注册表）；此时请求工作区作用域会得到可读报错，而不是静默改错文件 |
+| 切作用域 | 编辑器立刻上锁重载，并丢弃上一个作用域的版本列表 / 展开态 / 待确认操作 —— 避免对着 A 的版本按 B 的回滚 |
+| 默认作用域 | 全局（宿主把全局排在最前）。设置页不知道"当前会话"，因此不猜当前工作区 |
+
 
 ## 历史版本
 
@@ -42,7 +59,8 @@
 
 ```
 lib/index.js       宿主半区：TypertRemoteService('personalization') + ctx.typert.register(MANIFEST)
-lib/agents-file.js 纯文件逻辑：读取 / 备份 / 写入 + 历史版本枚举·读取·回滚·删除（无 DSH 运行时依赖，可单独测试）
+lib/agents-file.js 纯文件逻辑：读取 / 备份 / 写入 + 历史版本枚举·读取·回滚·删除（target file 可传入，无 DSH 运行时依赖，可单独测试）
+lib/scopes.js      纯作用域逻辑：global / workspace 归一化、id → 路径解析、作用域枚举（无 DSH 运行时依赖，可单独测试）
 lib/client.js      浏览器半区：window.__ModuleLoader__.load 懒加载 CJS 束，注册 settings.section
 cordis.patch.yml   Bundle patch：把裸包名插入为 Loader 行（客户端半区靠裸包名挂靠）
 test/helpers/      客户端束 vm 装载体（含微型 React 运行时）+ 保留名快照与 asar/token 工具
@@ -200,7 +218,7 @@ static assertMethodAvailable(namespace, method) {
 
 | 要点 | 说明 |
 |---|---|
-| 后果是**整组回滚** | `installMethods()` 捕获异常后回滚整组，所以一个名字撞车不是只废掉那一个方法，而是**六个方法全部装不上**，设置页只剩一行「远程服务未就绪」 |
+| 后果是**整组回滚** | `installMethods()` 捕获异常后回滚整组，所以一个名字撞车不是只废掉那一个方法，而是**七个方法全部装不上**，设置页只剩一行「远程服务未就绪」 |
 | 宿主侧不报错 | 宿主 registry（`dsh-typert-registry`）只拒绝重复端点 / 重复 id / 重复包，**没有**保留名校验，所以它照样注册成功。现象是「宿主正常但界面全废」，很难往命名上想 |
 | 因此的命名 | 历史版本的四个方法统一带 `Version(s)` 前缀：`listVersions` / `readVersion` / `restoreVersion` / `deleteVersion`。删除**不能**叫 `remove` |
 | 守护 | `test/helpers/gateway-reserved-names.mjs` 保存保留名快照，假网关按真实规则拒绝撞名方法；`test/manifest-parity.test.mjs` 另有一条测试在本机装了 DSH 时**直接从 asar 源码重新推导保留名**并比对快照，避免框架升级后快照悄悄过期 |
@@ -210,8 +228,10 @@ static assertMethodAvailable(namespace, method) {
 
 | 半区 | 生效方式 |
 |---|---|
-| 宿主 `lib/index.js` | 启动时组装，或由 `plugin_manager` 的 `set_bundle` 触发 reload。注意软链接插件**首次**加入时 resolver 路由表已在启动时冻结，那次 live reload 会报 `failed to import`；重启后同一调用即 `applied` |
+| 宿主 `lib/index.js` | **只能靠重启 App**。`plugin_manager` 的 `set_bundle` 在本机实测**不足以**重载宿主半区：`changed: false`（启用状态没变）时它根本不重载；即使 `changed: true`（关闭 → 开启，返回 `application: "applied"`），宿主半区的 `apply()` 也没有重新执行 —— 用临时探针（在 `apply()` 里写文件）确认过。软链接插件的 resolver 路由表在启动时冻结，这条限制对它是硬的 |
 | 客户端 `lib/client.js` | `@deepseek-ai/dsh-client-hmr` 每 500ms stat 轮询所有 client bundle，改动即调 `clientModules.rebuilt(id)` 并经 SSE 推送，浏览器热替换。保险起见刷新一次页面 |
+
+⚠️ **客户端比宿主先生效，中间会有一段坏窗口**：客户端已经带 `{ scope }` 调 `read`，而宿主还是启动时那份零参描述符时，网关的 `assertExactArguments` 会判 `gateway/arguments-invalid`，设置页显示读取失败。**只改宿主半区就重启；两端都改了也一样，必须重启。**
 
 服务端产物是否已带上改动，可以直接查：
 
@@ -224,17 +244,18 @@ curl -s "http://127.0.0.1:19387/plugins/??dsh-personalization/client.js&rev=<rev
 
 ```sh
 cd ~/Documents/deepseek-harness/dsh-personalization
-pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.test.mjs test/client-render.test.mjs test/manifest-parity.test.mjs
+pnpm test          # node --test test/agents-file.test.mjs test/scopes.test.mjs test/client-bundle.test.mjs test/client-render.test.mjs test/manifest-parity.test.mjs
 ```
 
 | 文件 | 项数 | 覆盖 |
 |---|---|---|
-| `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
-| `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
-| `test/client-render.test.mjs` | 10 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的结构、版本行的绝对时间与字节原文、按钮走自带的 `dsp-btn`（默认 `md` 与原语同尺寸、primary/outline 与 `dsp-danger` 语义）、**`require` 只有 `react`**（禁止引 Harness Client 包的回归闸门）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、抄进来的按钮几何与原生逐值一致、类名与样式双向一致（无死样式）、**按钮修饰类必须排在基础规则之后**（级联顺序） |
-| `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
+| `test/agents-file.test.mjs` | 28 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份；另外用 `agentsFileIn()` 覆盖**工作区作用域**（与全局各写各的、备份互不串、回滚/删除只动本作用域、`versionPathFor` 换作用域不放松 id 校验）。**不碰真实 `~/.dsh/AGENTS.md`。** |
+| `test/scopes.test.mjs` | 6 | `scopes.js` 的纯逻辑：`scopeKey`、`normalizeScope` 只认两个分支、`resolveScopeFile` 的全局/工作区路径、未知工作区与缺失注册表**抛错而不退回默认路径**、`scopeTargets` 顺序与缺标题、注册表缺失时退化成只有全局 |
+| `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、七端点描述符形状与载荷 typeSymbol、locale 字典与 `t()` 双向覆盖、七个方法引用稳定性与载荷透传（含 `{ scope }` / `{ scope, id }`）、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
+| `test/client-render.test.mjs` | 12 | 用装载体里的**微型 React 运行时**把设置页真正渲染出来：标题/说明/编辑器/状态行的结构、**作用域下拉的选项来自宿主 `listScopes()` 且切换后按新作用域重发读写**、版本行的绝对时间与字节原文、按钮走自带的 `dsp-btn`（默认 `md` 与原语同尺寸、primary/outline 与 `dsp-danger` 语义）、**`require` 只有 `react`**（禁止引 Harness Client 包的回归闸门）、dirty 时回滚禁用而保存可用、破坏性操作的行内二次确认（取消可退回、确认前不发远程调用）、远程未就绪时全按钮禁用、**样式引用的 token 在主题包里真实存在**、抄进来的按钮几何与原生逐值一致、类名与样式双向一致（无死样式）、**按钮修饰类必须排在基础规则之后**（级联顺序） |
+| `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值（含**工作区作用域**），并断言 `scope` 载荷只收两个分支（未知 kind / 空 workspaceId / 缺字段一律被拒） |
 
-合计 48 项。
+合计 59 项。
 
 两个 helper 支撑上面这些用例：
 
@@ -273,6 +294,8 @@ pnpm add "dsh-personalization@link:$HOME/Documents/deepseek-harness/dsh-personal
 2. 设置面板里应出现「个性化」，能读到 `~/.dsh/AGENTS.md` 现状，下方能看到「历史版本」列表（本机当时 4 份备份，最新一份 1635 字节）。
 3. 改一行保存，检查同目录出现 `AGENTS.md.bak-<YYYYMMDD-HHmmss>`，且其内容等于改动前那一版；历史列表应立刻多出一行。
 4. 点某行的「查看」应展开该版本内容；「删除」应经过二次确认后只删掉 `.bak-*`。
+5. **作用域**：下拉里除「全局（所有工作区）」外，应列出全部已注册工作区（标题 + 路径；还没有 AGENTS.md 的带「尚未创建」）。切到某个工作区后：文件信息里的路径应变成 `<workspace>/AGENTS.md`，编辑器内容应换成该工作区的文件（不存在则空 + 提示「文件不存在，保存后会创建」），历史版本列表也应换成该工作区目录里的 `.bak-*`。在该作用域保存后，`<workspace>/AGENTS.md.bak-*` 应出现在**工作区目录**里，而 `~/.dsh/AGENTS.md` 不受影响。
+6. 拿一个不存在的工作区 id 调 `read`，应得到 `scopes: unknown workspace "..."` 这种可读报错 —— 而不是静默改到全局文件上。
 
 宿主半区的纯逻辑可以脱离 DSH 单独验证（用 `DSH_HOME` 指向临时目录，不碰真实文件）：
 
@@ -281,7 +304,22 @@ cd ~/Documents/deepseek-harness/dsh-personalization
 DSH_HOME=/tmp/dsp-check node -e '
   const m = await import("./lib/agents-file.js");
   console.log(m.agentsFile());
+  console.log(m.agentsFileIn("/tmp/ws-demo"));          // -> /tmp/ws-demo/AGENTS.md
   console.log(m.backupPathFor("/tmp/a/AGENTS.md", new Date(2026, 9, 10, 8, 53, 10)));
+'
+```
+
+作用域解析同样是纯函数，注册表用最小替身即可（注意：未知工作区必须抛错）：
+
+```sh
+cd ~/Documents/deepseek-harness/dsh-personalization
+DSH_HOME=/tmp/dsp-check node -e '
+  const s = await import("./lib/scopes.js");
+  const registry = { list: () => [{ id: "ws-1", title: "demo", path: "/tmp/ws-demo" }], get: (id) => (id === "ws-1" ? { path: "/tmp/ws-demo" } : undefined) };
+  console.log(s.scopeKey({ kind: "global" }), s.scopeKey({ kind: "workspace", workspaceId: "ws-1" }));
+  console.log(s.resolveScopeFile({ kind: "global" }, registry));
+  console.log(s.resolveScopeFile({ kind: "workspace", workspaceId: "ws-1" }, registry));
+  try { s.resolveScopeFile({ kind: "workspace", workspaceId: "nope" }, registry); } catch (error) { console.log("expected:", error.message); }
 '
 ```
 
@@ -297,9 +335,12 @@ node -e '
 
 ## 已知限制
 
-- 只编辑全局 AGENTS.md；项目级 `<workspace>/AGENTS.md` 尚未接入。
+- 设置页**不知道"当前会话"**，所以没有「跟随当前工作区」的默认值：打开设置一律停在全局，要改某个工作区得自己在下拉里选。
+- 工作区列表要求宿主存在 `workspaceRegistry` 服务；精简组合里没有它时，下拉只剩「全局」（此时请求工作区作用域会报错，不会静默改错文件）。
+- 只认 `AGENTS.md`：工作区里的 `CLAUDE.md` / `AGENTS.local.md` 虽然在指令链里，但不在这个页面的编辑范围内。
 - 页面只做「读取 / 编辑 / 保存 + 历史版本（查看 / 回滚 / 删除）」。版本间 diff、另存为、字数统计、清空全部历史尚未提供。
 - 历史版本**没有自动上限**，也不会自动清理；长期使用请用「删除」手动收拾。
 - 回滚没有 diff 预览：确认框只给出时间与 id，用户看不到内容差异（可以先「查看」再决定）。
 - 保存与回滚都没有并发保护：两个窗口同时操作时，后写入的覆盖先写入的。`nextBackupPath` 的「查名字 → 复制」之间也有极窄的竞态窗口，理论上同一秒内两个进程可能撞名。
-- `lib/client.js` 是手写束，没有 TS 类型检查，靠三个测试文件与真实运行兜底。
+- `versionIdOf` 只按文件名判断（不带目录），所以它不能单独用来区分作用域 —— 作用域隔离由 `versionPathFor(id, file)` 负责，两处都有测试盯住。
+- `lib/client.js` 是手写束，没有 TS 类型检查，靠四个测试文件与真实运行兜底。

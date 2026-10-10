@@ -291,9 +291,20 @@ export async function evaluateBundle({ mount, primitives = 'native' } = {}) {
             },
         }),
         deleteVersion: async (payload) => ({ ok: true, value: { id: payload.id, path: `/tmp/AGENTS.md.bak-${payload.id}` } }),
+        // 两个作用域：全局（有文件）+ 一个尚未创建 AGENTS.md 的工作区，
+        // 这样下拉的两种文案（本地化全局名、工作区名 + 「尚未创建」）都被渲染到。
+        listScopes: async () => ({
+            ok: true,
+            value: {
+                scopes: [
+                    { kind: 'global', workspaceId: null, title: null, path: '/tmp/AGENTS.md', exists: true, bytes: 2, mtimeMs: 1 },
+                    { kind: 'workspace', workspaceId: 'ws-1', title: 'demo-workspace', path: '/tmp/demo/AGENTS.md', exists: false, bytes: 0, mtimeMs: 0 },
+                ],
+            },
+        }),
     }
     // 记录每个方法的调用入参，用来验证代理没有丢参数或改形状。
-    for (const method of ['read', 'save', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
+    for (const method of ['read', 'save', 'listScopes', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
         const original = namespace[method]
         namespace[method] = async (payload) => {
             records.calls.push({ method, payload })

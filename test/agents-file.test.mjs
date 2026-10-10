@@ -359,3 +359,82 @@ test('readVersion 拒绝超过上限的版本，不把大文件读进内存', as
     await assert.rejects(() => module.readVersion('20261010-085310'), RangeError)
   })
 })
+
+test('agentsFileIn 指向工作区目录里的 AGENTS.md，拒绝空目录', async () => {
+  await withSandbox(async ({ home, module }) => {
+    assert.equal(module.agentsFileIn(join(home, 'demo')), join(home, 'demo', 'AGENTS.md'))
+    for (const bad of ['', null, undefined, 42]) {
+      assert.throws(() => module.agentsFileIn(bad), TypeError, `应拒绝 ${JSON.stringify(bad)}`)
+    }
+  })
+})
+
+test('describeAgentsFile 只读元信息，文件不存在算成功', async () => {
+  await withSandbox(async ({ home, module }) => {
+    assert.deepEqual(await module.describeAgentsFile(), {
+      path: join(home, 'AGENTS.md'),
+      exists: false,
+      bytes: 0,
+      mtimeMs: 0,
+    })
+    await module.writeAgentsFile('# 偏好\n')
+    const present = await module.describeAgentsFile()
+    assert.equal(present.exists, true)
+    assert.equal(present.bytes, Buffer.byteLength('# 偏好\n', 'utf8'))
+    assert.ok(present.mtimeMs > 0)
+  })
+})
+
+test('versionPathFor / versionIdOf 按作用域解析到各自的备份', async () => {
+  await withSandbox(async ({ home, module }) => {
+    const scoped = module.agentsFileIn(join(home, 'demo'))
+    assert.equal(module.versionPathFor('20261010-085310'), join(home, 'AGENTS.md.bak-20261010-085310'))
+    assert.equal(
+      module.versionPathFor('20261010-085310', scoped),
+      join(home, 'demo', 'AGENTS.md.bak-20261010-085310'),
+    )
+    assert.throws(() => module.versionPathFor('../x', scoped), RangeError, '换作用域不放松 id 校验')
+    assert.equal(module.versionIdOf(join(home, 'demo', 'AGENTS.md.bak-20261010-085310'), scoped), '20261010-085310')
+    // `versionIdOf` 只比较**文件名**，所以同名文件在别的目录里长得一样 —— 它只用于
+    // `listVersions`（目录已由 file 选定）与刚生成的 backupPath，不承担作用域隔离。
+    // 隔离由 `versionPathFor(id, file)` 这个唯一的 id → 路径入口负责。
+    assert.equal(module.versionIdOf(join(home, 'demo', 'AGENTS.md.bak-20261010-085310')), '20261010-085310')
+    assert.equal(module.versionIdOf('/tmp/other.md.bak-20261010-085310'), null, '文件名不同则不认')
+  })
+})
+
+test('工作区作用域走同一条流水线，且与全局互不干扰', async () => {
+  await withSandbox(async ({ home, module }) => {
+    const scoped = module.agentsFileIn(join(home, 'demo'))
+
+    await module.writeAgentsFile('# 全局\n')
+    const scopedFirst = await module.writeAgentsFile('# 工作区\n', scoped)
+    assert.equal(scopedFirst.path, scoped)
+    assert.equal(scopedFirst.backupPath, null, '工作区首次写入无备份')
+    assert.equal(await readFile(scoped, 'utf8'), '# 工作区\n')
+
+    // 各自再写一版：备份落在各自目录里，互不串。
+    const globalSecond = await module.writeAgentsFile('# 全局 v2\n')
+    const scopedSecond = await module.writeAgentsFile('# 工作区 v2\n', scoped)
+    assert.equal(globalSecond.backupPath, join(home, `AGENTS.md.bak-${globalSecond.backupId}`))
+    assert.equal(scopedSecond.backupPath, join(home, 'demo', `AGENTS.md.bak-${scopedSecond.backupId}`))
+
+    assert.deepEqual((await module.listVersions()).versions.map((v) => v.id), [globalSecond.backupId])
+    assert.deepEqual((await module.listVersions(scoped)).versions.map((v) => v.id), [scopedSecond.backupId])
+
+    // 回滚只作用于本作用域。回滚本身也会先存一份「回滚前的内容」，所以全局变成 2 份。
+    const restored = await module.restoreVersion(globalSecond.backupId)
+    assert.equal(await readFile(join(home, 'AGENTS.md'), 'utf8'), '# 全局\n')
+    assert.equal(await readFile(scoped, 'utf8'), '# 工作区 v2\n', '全局回滚不得动工作区文件')
+    assert.equal((await module.listVersions()).versions.length, 2, '回滚前的全局内容也被存了一份')
+
+    // 删除同理：只删本作用域的备份，全局那两份一份都不能少。
+    await module.removeVersion(scopedSecond.backupId, scoped)
+    assert.deepEqual((await module.listVersions(scoped)).versions, [])
+    assert.deepEqual(
+      (await module.listVersions()).versions.map((v) => v.id).sort(),
+      [restored.backupId, globalSecond.backupId].sort(),
+      '工作区的删除不得动全局备份',
+    )
+  })
+})

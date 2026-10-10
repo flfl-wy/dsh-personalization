@@ -113,11 +113,12 @@ function contractOf(descriptor) {
 
 test('MANIFEST 满足 typert-loader 的结构规则', () => {
   const { ids, endpoints } = assertLoaderAccepted(MANIFEST)
-  assert.equal(endpoints.size, 6)
+  assert.equal(endpoints.size, 7)
   assert.deepEqual(
     [...endpoints].sort(),
     [
       'personalization/deleteVersion',
+      'personalization/listScopes',
       'personalization/listVersions',
       'personalization/read',
       'personalization/readVersion',
@@ -125,7 +126,7 @@ test('MANIFEST 满足 typert-loader 的结构规则', () => {
       'personalization/save',
     ],
   )
-  assert.equal(ids.size, 6)
+  assert.equal(ids.size, 7)
 })
 
 test('方法名不与命名空间服务自身成员冲突', () => {
@@ -218,13 +219,66 @@ test('MANIFEST 的 zod 结果 schema 能解析 agents-file.js 的真实返回值
     resultSchemaOf('deleteVersion').parse(await file.removeVersion(restored.backupId))
 
     // 入参会被网关用 codec.create().parse() 强制校验，所以形状必须真的收得下。
-    const payload = payloadSchemaOf('readVersion')
-    assert.deepEqual(plain(payload.parse({ id: '20261010-085310' })), { id: '20261010-085310' })
-    assert.throws(() => payload.parse({}), '缺 id 必须被拒')
-    assert.throws(() => payload.parse({ id: 42 }), '非字符串 id 必须被拒')
+    const globalScope = { kind: 'global' }
+    const workspaceScope = { kind: 'workspace', workspaceId: 'ws-1' }
+
+    const versionPayload = payloadSchemaOf('readVersion')
+    assert.deepEqual(
+      plain(versionPayload.parse({ scope: globalScope, id: '20261010-085310' })),
+      { scope: { kind: 'global' }, id: '20261010-085310' },
+    )
+    assert.deepEqual(
+      plain(versionPayload.parse({ scope: workspaceScope, id: 'x' })),
+      { scope: { kind: 'workspace', workspaceId: 'ws-1' }, id: 'x' },
+    )
+    assert.throws(() => versionPayload.parse({ id: 'x' }), '缺 scope 必须被拒')
+    assert.throws(() => versionPayload.parse({ scope: globalScope }), '缺 id 必须被拒')
+    assert.throws(() => versionPayload.parse({ scope: { kind: 'nope' }, id: 'x' }), '未知 scope kind 必须被拒')
+    assert.throws(() => versionPayload.parse({ scope: { kind: 'workspace' }, id: 'x' }), '工作区作用域必须带 workspaceId')
+    assert.throws(() => versionPayload.parse({ scope: { kind: 'workspace', workspaceId: '' }, id: 'x' }), '空 workspaceId 必须被拒')
+    assert.throws(() => versionPayload.parse({ scope: globalScope, id: 42 }), '非字符串 id 必须被拒')
     // zod v4 的 object 默认**剥离**未知字段而不是报错；多字段是在网关的
     // assertExactArguments 那一层被拒的（args 的字段必须与 descriptor 完全一致）。
-    assert.deepEqual(plain(payload.parse({ id: 'x', extra: 1 })), { id: 'x' })
+    assert.deepEqual(
+      plain(versionPayload.parse({ scope: globalScope, id: 'x', extra: 1 })),
+      { scope: { kind: 'global' }, id: 'x' },
+    )
+
+    // 只收 `{ scope }` 的方法（read / listVersions）与保存载荷。
+    const scopePayload = payloadSchemaOf('read')
+    assert.deepEqual(plain(scopePayload.parse({ scope: workspaceScope })), { scope: { kind: 'workspace', workspaceId: 'ws-1' } })
+    assert.throws(() => scopePayload.parse({}), 'read 缺 scope 必须被拒')
+    assert.deepEqual(plain(payloadSchemaOf('listVersions').parse({ scope: globalScope })), { scope: { kind: 'global' } })
+
+    const savePayload = payloadSchemaOf('save')
+    assert.deepEqual(
+      plain(savePayload.parse({ scope: workspaceScope, content: 'x' })),
+      { scope: { kind: 'workspace', workspaceId: 'ws-1' }, content: 'x' },
+    )
+    assert.throws(() => savePayload.parse({ scope: globalScope }), 'save 缺 content 必须被拒')
+
+    // listScopes 是唯一的零参方法，结果 schema 必须收得下宿主返回的作用域列表。
+    const listScopes = MANIFEST.invocations.find((entry) => entry.method === 'listScopes')
+    assert.deepEqual(listScopes.parameters, [])
+    assert.deepEqual(plain(listScopes.result.create().parse({
+      scopes: [
+        { kind: 'global', workspaceId: null, title: null, path: '/x/AGENTS.md', exists: true, bytes: 1, mtimeMs: 1 },
+        { kind: 'workspace', workspaceId: 'ws-1', title: 'demo', path: '/x/demo/AGENTS.md', exists: false, bytes: 0, mtimeMs: 0 },
+      ],
+    })).scopes.length, 2)
+
+    // 工作区作用域走同一条流水线，所以返回值也必须过同一批 schema。
+    const workspaceDir = await mkdtemp(join(tmpdir(), 'dsh-personalization-parity-ws-'))
+    try {
+      const scoped = join(workspaceDir, 'AGENTS.md')
+      resultSchemaOf('read').parse(await file.readAgentsFile(scoped))
+      const scopedSaved = resultSchemaOf('save').parse(await file.writeAgentsFile('# 工作区\n', scoped))
+      assert.equal(scopedSaved.path, scoped)
+      resultSchemaOf('read').parse(await file.readAgentsFile(scoped))
+      resultSchemaOf('listVersions').parse(await file.listVersions(scoped))
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true })
+    }
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previous

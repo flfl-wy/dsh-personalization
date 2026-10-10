@@ -126,11 +126,17 @@ try {
     await bundle.exports.apply(bundle.ctx)
     seedVersions(bundle)
     const page = await mountSection(bundle)
-    // 只截「底部操作区 + 历史版本」这一段：按钮都在这里，两段叠起来也放得下。
+    // 只截「顶部（标题 / 说明 / 作用域下拉 / 文件信息）」与「底部操作区 + 历史版本」两段：
+    // 整页太长，缩到能看清按钮与下拉的尺度就没有信息量了。
+    const headAreaOf = (markup) => {
+        const at = markup.indexOf('<textarea')
+        return at >= 0 ? markup.slice(0, at) : markup
+    };
     const actionAreaOf = (markup) => {
         const at = markup.indexOf('<footer class="dsp-footer">')
         return at >= 0 ? markup.slice(at) : markup
     };
+    const head = headAreaOf(toHtml(page.tree))
     const idle = actionAreaOf(toHtml(page.tree))
     // 按下「删除」后的确认态（实心红按钮只在这里出现）
     await page.press('删除')
@@ -147,9 +153,11 @@ hr{border:none;border-top:.5px solid var(--dsw-alias-border-l2);margin:20px 24px
 </style>
 <style>${css.bundle}</style>
 </head><body>
-<div class="caption">① 默认态</div><div class="options">${idle}</div>
+<div class="caption">① 顶部：标题 / 说明 / 作用域下拉 / 文件信息</div><div class="options">${head}</div>
 <hr>
-<div class="caption">② 按下「删除」后的确认态（实心红只在这里出现）</div><div class="options">${confirming}</div>
+<div class="caption">② 默认态（操作区 + 历史版本）</div><div class="options">${idle}</div>
+<hr>
+<div class="caption">③ 按下「删除」后的确认态（实心红只在这里出现）</div><div class="options">${confirming}</div>
 </body></html>`
 } finally {
     asar.close()
@@ -166,7 +174,7 @@ const args = [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--force-device-scale-factor=2', // 0.5px 发丝边在 1x 下会消失
     `--user-data-dir=${join(OUT, 'browser-profile')}`,
-    '--window-size=780,700',
+    '--window-size=780,1180',
     `--screenshot=${shotPath}`,
     `file://${htmlPath}`,
 ]

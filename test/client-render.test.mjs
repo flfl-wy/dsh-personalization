@@ -23,7 +23,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { clientPath, evaluateBundle, hostsOf, mountSection, textOf } from './helpers/client-bundle-harness.mjs'
+import { clientPath, evaluateBundle, hostsOf, mountSection, plain, textOf } from './helpers/client-bundle-harness.mjs'
 import { DSH_ASAR_PATH } from './helpers/asar.mjs'
 import { themeTokenNames } from './helpers/theme-tokens.mjs'
 
@@ -72,7 +72,7 @@ test('设置页渲染出标题 / 说明 / 编辑器 / 状态行', async () => {
     assert.match(textOf(intro), /AGENTS\.md/, '说明文案要讲清这个文件是什么')
 
     const [editor] = hostsOf(page.tree, 'textarea')
-    assert.equal(editor.props['aria-label'], '全局 AGENTS.md 内容')
+    assert.equal(editor.props['aria-label'], 'AGENTS.md 内容')
     assert.equal(editor.props.value, 'hi', '挂载后应载入文件内容')
     assert.equal(editor.props.disabled, false)
 
@@ -146,6 +146,40 @@ test('编辑器有未保存改动时状态转 dirty，回滚被禁用而保存�
     assert.equal(restore.props.disabled, true, '回滚会重读文件，必须挡住未保存改动')
     assert.equal(save.props.disabled, false, '有改动时保存要可用')
     assert.match(textOf(page.tree), /保存或重新加载/, '提示里要说清怎么解除')
+})
+
+test('作用域下拉列出宿主给的作用域，切换后按新作用域重新读取', async () => {
+    const bundle = await evaluateBundle()
+    await bundle.exports.apply(bundle.ctx)
+    const page = await mountSection(bundle)
+
+    // 选项完全来自宿主 `listScopes()`：全局 + 一个尚未创建 AGENTS.md 的工作区。
+    const [select] = hostsOf(page.tree, 'select')
+    assert.equal(select.props.className, 'dsp-select')
+    assert.equal(select.props.value, 'global', '默认停在全局作用域（宿主把它排在最前）')
+    const options = hostsOf(page.tree, 'option')
+    assert.deepEqual(options.map((node) => node.props.value), ['global', 'workspace:ws-1'])
+    assert.match(textOf(options[0]), /全局/, '全局选项走本地化文案')
+    assert.match(textOf(options[1]), /demo-workspace/, '工作区选项用宿主给的标题')
+    assert.match(textOf(options[1]), /尚未创建/, '该工作区还没有 AGENTS.md，要标出来')
+
+    const reads = () => bundle.records.calls.filter((call) => call.method === 'read')
+    assert.equal(reads().length, 1, '挂载后只按默认作用域读一次')
+    assert.deepEqual(plain(reads()[0].payload), { scope: { kind: 'global' } })
+
+    // 切到工作区：读取与历史版本都必须按新作用域重发 —— 少了 scope 就会改错文件。
+    select.props.onChange({ target: { value: 'workspace:ws-1' } })
+    await page.update()
+
+    const after = reads()
+    assert.equal(after.length, 2, '切作用域要重新读取一次')
+    assert.deepEqual(plain(after[1].payload), { scope: { kind: 'workspace', workspaceId: 'ws-1' } })
+    const versionCalls = bundle.records.calls.filter((call) => call.method === 'listVersions')
+    assert.deepEqual(
+        plain(versionCalls[versionCalls.length - 1].payload),
+        { scope: { kind: 'workspace', workspaceId: 'ws-1' } },
+        '历史版本列表也要跟着换作用域',
+    )
 })
 
 test('破坏性操作要行内二次确认，取消可退回', async () => {

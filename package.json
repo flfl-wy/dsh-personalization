@@ -2,7 +2,7 @@
     "name": "dsh-personalization",
     "version": "0.1.0",
     "private": true,
-    "description": "个性化设置页：在 DSH Settings 中编辑全局 AGENTS.md",
+    "description": "个性化设置页：在 DSH Settings 中按作用域编辑 AGENTS.md（全局或指定工作区）",
     "type": "module",
     "main": "lib/index.js",
     "exports": {
@@ -11,7 +11,7 @@
         "./package.json": "./package.json"
     },
     "scripts": {
-        "test": "node --test test/agents-file.test.mjs test/client-bundle.test.mjs test/client-render.test.mjs test/manifest-parity.test.mjs",
+        "test": "node --test test/agents-file.test.mjs test/scopes.test.mjs test/client-bundle.test.mjs test/client-render.test.mjs test/manifest-parity.test.mjs",
         "preview": "node tools/visual-preview.mjs --shoot"
     },
     "dsh": {

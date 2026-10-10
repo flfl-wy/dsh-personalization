@@ -5,8 +5,8 @@
  * 浏览器里那样求值（装载体见 `helpers/client-bundle-harness.mjs`），验证：
  *   - 只注册 factory、导出 `apply` / `inject`
  *   - `apply` 注册字典、$mount 消费者贡献、把设置页注册进 settings.section
- *   - 消费者描述符覆盖全部六个端点（与宿主 manifest 的逐字段一致性见 manifest-parity.test.mjs）
- *   - `inject` 面拿到的六个方法引用稳定（否则 React 依赖会无限重跑）
+ *   - 消费者描述符覆盖全部七个端点（与宿主 manifest 的逐字段一致性见 manifest-parity.test.mjs）
+ *   - `inject` 面拿到的七个方法引用稳定（否则 React 依赖会无限重跑）
  *   - $mount 失败时降级为页面内的错误提示而不是整块崩掉
  *
  * 运行：`node --test test/`
@@ -21,6 +21,7 @@ import { clientPath, evaluateBundle, plain } from './helpers/client-bundle-harne
 const EXPECTED_ENDPOINTS = [
     'personalization/read',
     'personalization/save',
+    'personalization/listScopes',
     'personalization/listVersions',
     'personalization/readVersion',
     'personalization/restoreVersion',
@@ -63,7 +64,7 @@ test('apply 注册字典、挂载贡献并注册 settings.section', async () => 
 
     const injected = section.options.inject()
     assert.equal(typeof injected.t, 'function')
-    for (const method of ['read', 'save', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
+    for (const method of ['read', 'save', 'listScopes', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
         assert.equal(typeof injected[method], 'function', `inject 面必须提供 ${method}`)
     }
     assert.equal(injected.remoteError, null)
@@ -72,7 +73,17 @@ test('apply 注册字典、挂载贡献并注册 settings.section', async () => 
     assert.equal(typeof dispose, 'function', 'apply 必须返回卸载函数')
 })
 
-test('消费者描述符覆盖全部六个端点，且参数形状正确', async () => {
+/** 每个方法应声明的载荷 typeSymbol；`listScopes` 是唯一的零参方法，不在表里。 */
+const PAYLOAD_SYMBOLS = {
+    read: 'dsh-personalization#ScopePayload',
+    save: 'dsh-personalization#SavePayload',
+    listVersions: 'dsh-personalization#ScopePayload',
+    readVersion: 'dsh-personalization#VersionPayload',
+    restoreVersion: 'dsh-personalization#VersionPayload',
+    deleteVersion: 'dsh-personalization#VersionPayload',
+}
+
+test('消费者描述符覆盖全部七个端点，且参数形状正确', async () => {
     const { exports, ctx, records } = await evaluateBundle()
     await exports.apply(ctx)
 
@@ -93,13 +104,16 @@ test('消费者描述符覆盖全部六个端点，且参数形状正确', async
         assert.equal(descriptor.service, 'personalization')
         assert.equal(descriptor.namespace, 'personalization')
         assert.deepEqual(plain(descriptor.invocation), { kind: 'direct' })
-        // 零参方法必须声明空数组，其余方法一律收一个 `{ id }` 载荷。
-        const expectsPayload = descriptor.method !== 'read' && descriptor.method !== 'listVersions'
-        assert.equal(descriptor.parameters.length, expectsPayload ? 1 : 0, `${descriptor.method} 的参数个数`)
-        if (expectsPayload) {
+        // 载荷分成两种形状：`{ scope }` 与 `{ scope, id }`；`listScopes` 零参。
+        const expectedSymbol = PAYLOAD_SYMBOLS[descriptor.method]
+        if (expectedSymbol === undefined) {
+            assert.equal(descriptor.parameters.length, 0, `${descriptor.method} 必须是零参方法`)
+        } else {
+            assert.equal(descriptor.parameters.length, 1, `${descriptor.method} 的参数个数`)
             assert.equal(descriptor.parameters[0].name, 'payload')
             assert.equal(descriptor.parameters[0].wire, 'payload')
             assert.equal(descriptor.parameters[0].source, 'json')
+            assert.equal(descriptor.parameters[0].codec.typeSymbol, expectedSymbol)
         }
         for (const codec of [descriptor.result, ...descriptor.parameters.map((parameter) => parameter.codec)]) {
             assert.equal(codec.mode, 'strict')
@@ -132,58 +146,68 @@ test('locale 字典与 t() 引用双向覆盖', async () => {
     )
 })
 
-test('inject 面拿到的六个方法引用在多次读取间保持稳定', async () => {
+test('inject 面拿到的七个方法引用在多次读取间保持稳定', async () => {
     const { exports, ctx, records } = await evaluateBundle()
     await exports.apply(ctx)
     const section = records.slots.find((entry) => entry.options !== undefined)
 
     const first = section.options.inject()
     const second = section.options.inject()
-    for (const method of ['read', 'save', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
+    for (const method of ['read', 'save', 'listScopes', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
         assert.equal(first[method], second[method], `${method} 每次新建会让组件的 useCallback 依赖失效`)
     }
     assert.equal(first.t, second.t)
 })
 
-test('六个方法都代理到远程命名空间，并原样传递载荷', async () => {
+test('七个方法都代理到远程命名空间，并原样传递载荷', async () => {
     const { exports, ctx, records } = await evaluateBundle()
     await exports.apply(ctx)
     const section = records.slots.find((entry) => entry.options !== undefined)
     const injected = section.options.inject()
+    const global = { kind: 'global' }
+    const workspace = { kind: 'workspace', workspaceId: 'ws-1' }
 
-    const readResult = await injected.read()
+    const readResult = await injected.read({ scope: global })
     assert.equal(readResult.ok, true)
     assert.equal(readResult.value.path, '/tmp/AGENTS.md')
 
-    const saveResult = await injected.save({ content: 'new' })
+    const saveResult = await injected.save({ scope: workspace, content: 'new' })
     assert.equal(saveResult.ok, true)
     assert.equal(saveResult.value.backupPath, null)
 
-    const listVersionsResult = await injected.listVersions()
+    const scopesResult = await injected.listScopes()
+    assert.equal(scopesResult.ok, true)
+    assert.equal(scopesResult.value.scopes.length, 2, '全局 + 一个工作区')
+    assert.equal(scopesResult.value.scopes[0].kind, 'global')
+    assert.equal(scopesResult.value.scopes[0].workspaceId, null)
+    assert.equal(scopesResult.value.scopes[1].workspaceId, 'ws-1')
+
+    const listVersionsResult = await injected.listVersions({ scope: global })
     assert.equal(listVersionsResult.ok, true)
     assert.deepEqual(plain(listVersionsResult.value.versions), [])
 
-    const detail = await injected.readVersion({ id: '20261010-085310' })
+    const detail = await injected.readVersion({ scope: global, id: '20261010-085310' })
     assert.equal(detail.ok, true)
     assert.equal(detail.value.content, 'old')
 
-    const restored = await injected.restoreVersion({ id: '20261010-085310' })
+    const restored = await injected.restoreVersion({ scope: workspace, id: '20261010-085310' })
     assert.equal(restored.ok, true)
     assert.equal(restored.value.restoredFrom, '20261010-085310')
 
-    const deleted = await injected.deleteVersion({ id: '20261010-085310' })
+    const deleted = await injected.deleteVersion({ scope: workspace, id: '20261010-085310' })
     assert.equal(deleted.ok, true)
     assert.equal(deleted.value.id, '20261010-085310')
 
-    // 参数必须原样透传 —— 尤其是 `{ id }`，否则宿主会因为 zod 校验失败而整批报错。
+    // 参数必须原样透传 —— 尤其是 `{ scope, id }`：丢掉 scope 就会写错文件。
     // 这里不能用 plain()：零参调用的 payload 是 undefined，JSON 归一化会把它抹掉。
     assert.deepEqual(records.calls, [
-        { method: 'read', payload: undefined },
-        { method: 'save', payload: { content: 'new' } },
-        { method: 'listVersions', payload: undefined },
-        { method: 'readVersion', payload: { id: '20261010-085310' } },
-        { method: 'restoreVersion', payload: { id: '20261010-085310' } },
-        { method: 'deleteVersion', payload: { id: '20261010-085310' } },
+        { method: 'read', payload: { scope: global } },
+        { method: 'save', payload: { scope: workspace, content: 'new' } },
+        { method: 'listScopes', payload: undefined },
+        { method: 'listVersions', payload: { scope: global } },
+        { method: 'readVersion', payload: { scope: global, id: '20261010-085310' } },
+        { method: 'restoreVersion', payload: { scope: workspace, id: '20261010-085310' } },
+        { method: 'deleteVersion', payload: { scope: workspace, id: '20261010-085310' } },
     ])
 })
 
@@ -210,14 +234,16 @@ test('命名空间走 ctx.get("remote.<name>")，而不是 remote 上的同名�
     const section = records.slots.find((entry) => entry.options !== undefined)
     const injected = section.options.inject()
     const before = records.getKeys.filter((key) => key === 'remote.personalization').length
-    await injected.read()
-    await injected.save({ content: 'x' })
-    await injected.listVersions()
-    await injected.readVersion({ id: '20261010-085310' })
-    await injected.restoreVersion({ id: '20261010-085310' })
-    await injected.deleteVersion({ id: '20261010-085310' })
+    const global = { kind: 'global' }
+    await injected.read({ scope: global })
+    await injected.save({ scope: global, content: 'x' })
+    await injected.listScopes()
+    await injected.listVersions({ scope: global })
+    await injected.readVersion({ scope: global, id: '20261010-085310' })
+    await injected.restoreVersion({ scope: global, id: '20261010-085310' })
+    await injected.deleteVersion({ scope: global, id: '20261010-085310' })
     const after = records.getKeys.filter((key) => key === 'remote.personalization').length
-    assert.equal(after - before, 6, '六个方法各自重新取一次命名空间服务')
+    assert.equal(after - before, 7, '七个方法各自重新取一次命名空间服务')
 })
 
 test('$mount 失败时降级为页面内错误，而不是抛穿', async () => {
@@ -230,6 +256,7 @@ test('$mount 失败时降级为页面内错误，而不是抛穿', async () => {
     assert.ok(section !== undefined, '即使挂载失败也必须注册设置页，否则用户看不到任何提示')
     const injected = section.options.inject()
     assert.equal(injected.remoteError, 'gateway offline')
-    await assert.rejects(() => injected.read(), /远程服务未就绪|not ready/)
-    await assert.rejects(() => injected.listVersions(), /远程服务未就绪|not ready/)
+    await assert.rejects(() => injected.read({ scope: { kind: 'global' } }), /远程服务未就绪|not ready/)
+    await assert.rejects(() => injected.listScopes(), /远程服务未就绪|not ready/)
+    await assert.rejects(() => injected.listVersions({ scope: { kind: 'global' } }), /远程服务未就绪|not ready/)
 })
