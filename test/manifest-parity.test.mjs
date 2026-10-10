@@ -6,23 +6,30 @@
  * `gateway/input-invalid` 这种难懂的错误暴露，宿主启动时不会报任何东西 —— 所以
  * 这里把它变成可执行断言。
  *
- * 同时校验三件事：
+ * 同时校验四件事：
  *   1. `MANIFEST` 满足 `dsh-typert-loader` 的 `requireInvocation` 结构规则
  *      （id 与端点唯一、参数 wire 不重复、codec 必须是 strict 且带 create()）。
  *   2. 每个端点在两半区之间的契约字段完全一致。
  *   3. `MANIFEST` 里声明的 zod 结果 schema 能解析 `lib/agents-file.js` 的**真实返回值**
  *      （出参不在网关上校验，schema 只用于类型生成，所以只能在这里盯住它别漂）。
+ *   4. 方法名不与客户端命名空间服务的自身成员冲突（撞上会整组挂载失败，见 helper）。
  *
  * 运行：`node --test test/`
  */
 
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { registerHooks } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { evaluateBundle, plain } from './helpers/client-bundle-harness.mjs'
+import {
+  DSH_ASAR_PATH,
+  RESERVED_NAMESPACE_METHODS,
+  deriveReservedNamesFromAsar,
+} from './helpers/gateway-reserved-names.mjs'
 
 // 真实 dsh-typert-protocol import 了未安装的 @deepseek-ai/cordis（本插件故意不装，
 // 见 .npmrc 的 autoInstallPeers=false），所以把该包重定向到测试替身，只为取到
@@ -110,15 +117,39 @@ test('MANIFEST 满足 typert-loader 的结构规则', () => {
   assert.deepEqual(
     [...endpoints].sort(),
     [
-      'personalization/list',
+      'personalization/deleteVersion',
+      'personalization/listVersions',
       'personalization/read',
       'personalization/readVersion',
-      'personalization/remove',
-      'personalization/restore',
+      'personalization/restoreVersion',
       'personalization/save',
     ],
   )
   assert.equal(ids.size, 6)
+})
+
+test('方法名不与命名空间服务自身成员冲突', () => {
+  // 真实网关在装每个方法前调 assertMethodAvailable()，撞名的直接抛错，而且
+  // installMethods() 是整组回滚 —— 一个名字撞车，六个方法全装不上，页面只剩
+  // 「远程服务未就绪」。删除历史版本因此叫 deleteVersion 而不是 remove。
+  const collisions = MANIFEST.invocations
+    .map((invocation) => `${invocation.namespace}/${invocation.method}`)
+    .filter((endpoint) => RESERVED_NAMESPACE_METHODS.has(endpoint.split('/')[1]))
+  assert.deepEqual(collisions, [], '这些方法名与命名空间服务自身成员冲突，会导致整个命名空间挂载失败')
+})
+
+test('保留名快照与 DSH 自带源码仍然一致', (t) => {
+  // 快照是硬编码的，框架升级可能新增成员名。本机装了 DSH 时直接重新推导来对账，
+  // 免得快照悄悄过期、守卫变成摆设。没装 DSH 的机器（例如 CI）跳过。
+  if (!existsSync(DSH_ASAR_PATH)) {
+    t.skip('本机没有 DSH 安装，无法从源码推导保留名')
+    return
+  }
+  // 推导是正则近似解析，会多抓出 catch / if / for 这类方法体内的关键字，
+  // 所以只要求「真实保留名被快照包含」，不要求两者完全相等。
+  const derived = deriveReservedNamesFromAsar(DSH_ASAR_PATH)
+  const missed = [...derived].filter((name) => !RESERVED_NAMESPACE_METHODS.has(name))
+  assert.deepEqual(missed.sort(), [], 'DSH 自带的命名空间服务多了这些成员，请更新保留名快照')
 })
 
 test('客户端描述符与宿主 MANIFEST 逐字段一致', async () => {
@@ -181,10 +212,10 @@ test('MANIFEST 的 zod 结果 schema 能解析 agents-file.js 的真实返回值
     resultSchemaOf('save').parse(second)
     assert.notEqual(second.backupId, null, '第二次写入应产生备份，后续步骤才能跑')
 
-    resultSchemaOf('list').parse(await file.listVersions())
+    resultSchemaOf('listVersions').parse(await file.listVersions())
     resultSchemaOf('readVersion').parse(await file.readVersion(second.backupId))
-    const restored = resultSchemaOf('restore').parse(await file.restoreVersion(second.backupId))
-    resultSchemaOf('remove').parse(await file.removeVersion(restored.backupId))
+    const restored = resultSchemaOf('restoreVersion').parse(await file.restoreVersion(second.backupId))
+    resultSchemaOf('deleteVersion').parse(await file.removeVersion(restored.backupId))
 
     // 入参会被网关用 codec.create().parse() 强制校验，所以形状必须真的收得下。
     const payload = payloadSchemaOf('readVersion')

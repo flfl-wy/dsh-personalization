@@ -10,10 +10,10 @@
 | 目标文件 | `dshHomePath('AGENTS.md')`，即 `$DSH_HOME/AGENTS.md`，默认 `~/.dsh/AGENTS.md` |
 | 读取 | `personalization/read` —— 文件不存在时返回空内容 + `exists: false`，不报错 |
 | 保存 | `personalization/save` —— 覆盖前先复制为 `AGENTS.md.bak-YYYYMMDD-HHmmss`，再写入新内容 |
-| 历史版本 | `personalization/list` —— 枚举同目录全部 `.bak-*`，新的在前，只返回元数据 |
+| 历史版本 | `personalization/listVersions` —— 枚举同目录全部 `.bak-*`，新的在前，只返回元数据 |
 | 查看版本 | `personalization/readVersion` —— 按 id 取某个备份的完整内容 |
-| 回滚 | `personalization/restore` —— 把某版本写回主文件；**替换前先把当前内容另存为新版本** |
-| 删除版本 | `personalization/remove` —— 只删 `.bak-*`，主文件不受影响 |
+| 回滚 | `personalization/restoreVersion` —— 把某版本写回主文件；**替换前先把当前内容另存为新版本** |
+| 删除版本 | `personalization/deleteVersion` —— 只删 `.bak-*`，主文件不受影响 |
 | 路径来源 | 完全由宿主解析。客户端只能提交文本或不透明版本 id，两者都不携带路径 |
 | 读取失败 | 读取没成功就禁用编辑与保存，避免把文件清空成一个空文档 |
 
@@ -45,7 +45,7 @@ lib/index.js       宿主半区：TypertRemoteService('personalization') + ctx.t
 lib/agents-file.js 纯文件逻辑：读取 / 备份 / 写入 + 历史版本枚举·读取·回滚·删除（无 DSH 运行时依赖，可单独测试）
 lib/client.js      浏览器半区：window.__ModuleLoader__.load 懒加载 CJS 束，注册 settings.section
 cordis.patch.yml   Bundle patch：把裸包名插入为 Loader 行（客户端半区靠裸包名挂靠）
-test/helpers/      客户端束 vm 装载体（两个测试文件共用）
+test/helpers/      客户端束 vm 装载体 + 命名空间保留名快照与推导
 test/fixtures/     dsh-typert-protocol 测试替身（见 manifest-parity 测试的说明）
 test/              agents-file 往返测试 + 客户端束契约测试 + 跨半区契约测试
 ```
@@ -113,6 +113,29 @@ const read = async () => { await mounted; return ctx.get("remote.personalization
 
 注意 zod v4 的 `z.object` 默认**剥离**未知字段而不是报错 —— 多字段是被上表的 `assertExactArguments` 挡住的，不是 schema。
 
+### 方法名不能与命名空间服务自身成员重名（第三个坑，真踩过）
+
+`$mount` 会对**每个**方法调 `RemoteNamespaceService.assertMethodAvailable()`：
+
+```js
+const REMOTE_NAMESPACE_FIELDS = new Set(['ctx', 'empty', 'invokeRemote', 'methods', 'name', 'namespace']);
+
+static assertMethodAvailable(namespace, method) {
+    if (REMOTE_NAMESPACE_FIELDS.has(method) || method in RemoteNamespaceService.prototype) {
+        throw new Error(`client api: method ... conflicts with its namespace service`);
+    }
+}
+```
+
+`RemoteNamespaceService` 原型上自带 `assertMethodAvailable` / `empty` / `has` / `installDirect` / `installScoped` / `install` / **`remove`**；它又 `extends Service`（cordis），继承了 `ctx` / `name` / `init` / `check` / `config` / `invoke` / `extend` / `tracker` / `resolveConfig`。
+
+| 要点 | 说明 |
+|---|---|
+| 后果是**整组回滚** | `installMethods()` 捕获异常后回滚整组，所以一个名字撞车不是只废掉那一个方法，而是**六个方法全部装不上**，设置页只剩一行「远程服务未就绪」 |
+| 宿主侧不报错 | 宿主 registry（`dsh-typert-registry`）只拒绝重复端点 / 重复 id / 重复包，**没有**保留名校验，所以它照样注册成功。现象是「宿主正常但界面全废」，很难往命名上想 |
+| 因此的命名 | 历史版本的四个方法统一带 `Version(s)` 前缀：`listVersions` / `readVersion` / `restoreVersion` / `deleteVersion`。删除**不能**叫 `remove` |
+| 守护 | `test/helpers/gateway-reserved-names.mjs` 保存保留名快照，假网关按真实规则拒绝撞名方法；`test/manifest-parity.test.mjs` 另有一条测试在本机装了 DSH 时**直接从 asar 源码重新推导保留名**并比对快照，避免框架升级后快照悄悄过期 |
+
 
 ### 改动怎么生效
 
@@ -139,11 +162,18 @@ pnpm test          # node --test test/agents-file.test.mjs test/client-bundle.te
 |---|---|---|
 | `test/agents-file.test.mjs` | 24 | 把 `DSH_HOME` 指向临时目录：主文件往返、同上不覆盖、同一秒冲突改名、id 解析与越界拒绝、`listVersions` 排序与跳过符号链接、`readVersion` 超限拒绝、回滚可逆、删除只动备份。**不碰真实 `~/.dsh/AGENTS.md`。** |
 | `test/client-bundle.test.mjs` | 8 | 用假 `window.__ModuleLoader__` 与假种子词求值客户端束：导出的 `apply` / `inject`、`settings.section` 注册参数、六端点描述符形状、locale 字典与 `t()` 双向覆盖、六个方法引用稳定性与载荷透传、`$mount` 失败降级、命名空间必须走 `ctx.get("remote.<name>")` 的回归测试 |
-| `test/manifest-parity.test.mjs` | 3 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
+| `test/manifest-parity.test.mjs` | 5 | 宿主 `MANIFEST` 满足 `dsh-typert-loader` 规则、方法名不撞命名空间服务保留名、保留名快照与 DSH 自带源码一致、两半区描述符逐字段一致、结果 schema 能 parse `agents-file.js` 的真实返回值 |
 
-合计 35 项。
+合计 37 项。
 
-`manifest-parity` 需要一个 `@deepseek-ai/dsh-typert-protocol` 替身才能 import 宿主半区（真实包 import 了本插件故意不装的 cordis），用 `node:module` 的 `registerHooks` 把该 specifier 重定向到 `test/fixtures/typert-protocol-stub.mjs`。
+两个 helper 支撑上面这些用例：
+
+| helper | 作用 |
+|---|---|
+| `test/helpers/client-bundle-harness.mjs` | 在隔离 vm 里求值客户端束，并提供**按真实规则校验**的假 `$mount`（保留名、strict codec、端点不重复），任何一条不过都像真网关那样拒绝挂载 |
+| `test/helpers/gateway-reserved-names.mjs` | 命名空间服务保留名快照 + `assertMethodAvailable`，以及从 DSH 的 `app.asar` **重新推导**保留名的函数 |
+
+`manifest-parity` 需要一个 `@deepseek-ai/dsh-typert-protocol` 替身才能 import 宿主半区（真实包 import 了本插件故意不装的 cordis），用 `node:module` 的 `registerHooks` 把该 specifier 重定向到 `test/fixtures/typert-protocol-stub.mjs`。本机没装 DSH 时，「保留名快照与源码一致」那条会自动 skip。
 
 ## 安装
 

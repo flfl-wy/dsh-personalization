@@ -21,10 +21,10 @@ import { clientPath, evaluateBundle, plain } from './helpers/client-bundle-harne
 const EXPECTED_ENDPOINTS = [
     'personalization/read',
     'personalization/save',
-    'personalization/list',
+    'personalization/listVersions',
     'personalization/readVersion',
-    'personalization/restore',
-    'personalization/remove',
+    'personalization/restoreVersion',
+    'personalization/deleteVersion',
 ]
 
 test('束导出 apply / inject，且 inject 是宿主服务键数组', async () => {
@@ -63,7 +63,7 @@ test('apply 注册字典、挂载贡献并注册 settings.section', async () => 
 
     const injected = section.options.inject()
     assert.equal(typeof injected.t, 'function')
-    for (const method of ['read', 'save', 'list', 'readVersion', 'restore', 'remove']) {
+    for (const method of ['read', 'save', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
         assert.equal(typeof injected[method], 'function', `inject 面必须提供 ${method}`)
     }
     assert.equal(injected.remoteError, null)
@@ -94,7 +94,7 @@ test('消费者描述符覆盖全部六个端点，且参数形状正确', async
         assert.equal(descriptor.namespace, 'personalization')
         assert.deepEqual(plain(descriptor.invocation), { kind: 'direct' })
         // 零参方法必须声明空数组，其余方法一律收一个 `{ id }` 载荷。
-        const expectsPayload = descriptor.method !== 'read' && descriptor.method !== 'list'
+        const expectsPayload = descriptor.method !== 'read' && descriptor.method !== 'listVersions'
         assert.equal(descriptor.parameters.length, expectsPayload ? 1 : 0, `${descriptor.method} 的参数个数`)
         if (expectsPayload) {
             assert.equal(descriptor.parameters[0].name, 'payload')
@@ -139,7 +139,7 @@ test('inject 面拿到的六个方法引用在多次读取间保持稳定', asyn
 
     const first = section.options.inject()
     const second = section.options.inject()
-    for (const method of ['read', 'save', 'list', 'readVersion', 'restore', 'remove']) {
+    for (const method of ['read', 'save', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
         assert.equal(first[method], second[method], `${method} 每次新建会让组件的 useCallback 依赖失效`)
     }
     assert.equal(first.t, second.t)
@@ -159,31 +159,31 @@ test('六个方法都代理到远程命名空间，并原样传递载荷', async
     assert.equal(saveResult.ok, true)
     assert.equal(saveResult.value.backupPath, null)
 
-    const listResult = await injected.list()
-    assert.equal(listResult.ok, true)
-    assert.deepEqual(plain(listResult.value.versions), [])
+    const listVersionsResult = await injected.listVersions()
+    assert.equal(listVersionsResult.ok, true)
+    assert.deepEqual(plain(listVersionsResult.value.versions), [])
 
     const detail = await injected.readVersion({ id: '20261010-085310' })
     assert.equal(detail.ok, true)
     assert.equal(detail.value.content, 'old')
 
-    const restored = await injected.restore({ id: '20261010-085310' })
+    const restored = await injected.restoreVersion({ id: '20261010-085310' })
     assert.equal(restored.ok, true)
     assert.equal(restored.value.restoredFrom, '20261010-085310')
 
-    const removed = await injected.remove({ id: '20261010-085310' })
-    assert.equal(removed.ok, true)
-    assert.equal(removed.value.id, '20261010-085310')
+    const deleted = await injected.deleteVersion({ id: '20261010-085310' })
+    assert.equal(deleted.ok, true)
+    assert.equal(deleted.value.id, '20261010-085310')
 
     // 参数必须原样透传 —— 尤其是 `{ id }`，否则宿主会因为 zod 校验失败而整批报错。
     // 这里不能用 plain()：零参调用的 payload 是 undefined，JSON 归一化会把它抹掉。
     assert.deepEqual(records.calls, [
         { method: 'read', payload: undefined },
         { method: 'save', payload: { content: 'new' } },
-        { method: 'list', payload: undefined },
+        { method: 'listVersions', payload: undefined },
         { method: 'readVersion', payload: { id: '20261010-085310' } },
-        { method: 'restore', payload: { id: '20261010-085310' } },
-        { method: 'remove', payload: { id: '20261010-085310' } },
+        { method: 'restoreVersion', payload: { id: '20261010-085310' } },
+        { method: 'deleteVersion', payload: { id: '20261010-085310' } },
     ])
 })
 
@@ -212,10 +212,10 @@ test('命名空间走 ctx.get("remote.<name>")，而不是 remote 上的同名�
     const before = records.getKeys.filter((key) => key === 'remote.personalization').length
     await injected.read()
     await injected.save({ content: 'x' })
-    await injected.list()
+    await injected.listVersions()
     await injected.readVersion({ id: '20261010-085310' })
-    await injected.restore({ id: '20261010-085310' })
-    await injected.remove({ id: '20261010-085310' })
+    await injected.restoreVersion({ id: '20261010-085310' })
+    await injected.deleteVersion({ id: '20261010-085310' })
     const after = records.getKeys.filter((key) => key === 'remote.personalization').length
     assert.equal(after - before, 6, '六个方法各自重新取一次命名空间服务')
 })
@@ -231,5 +231,5 @@ test('$mount 失败时降级为页面内错误，而不是抛穿', async () => {
     const injected = section.options.inject()
     assert.equal(injected.remoteError, 'gateway offline')
     await assert.rejects(() => injected.read(), /远程服务未就绪|not ready/)
-    await assert.rejects(() => injected.list(), /远程服务未就绪|not ready/)
+    await assert.rejects(() => injected.listVersions(), /远程服务未就绪|not ready/)
 })

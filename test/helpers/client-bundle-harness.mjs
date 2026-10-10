@@ -10,6 +10,7 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
+import { assertMethodAvailable } from './gateway-reserved-names.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const clientPath = join(here, '..', '..', 'lib', 'client.js')
@@ -78,12 +79,12 @@ export async function evaluateBundle({ mount } = {}) {
     const namespace = {
         read: async () => ({ ok: true, value: { path: '/tmp/AGENTS.md', exists: true, content: 'hi', bytes: 2, mtimeMs: 1 } }),
         save: async () => ({ ok: true, value: { path: '/tmp/AGENTS.md', bytes: 3, mtimeMs: 2, backupPath: null, backupId: null } }),
-        list: async () => ({ ok: true, value: { dir: '/tmp', versions: [] } }),
+        listVersions: async () => ({ ok: true, value: { dir: '/tmp', versions: [] } }),
         readVersion: async (payload) => ({
             ok: true,
             value: { id: payload.id, path: `/tmp/AGENTS.md.bak-${payload.id}`, content: 'old', bytes: 3, mtimeMs: 1, at: 1 },
         }),
-        restore: async (payload) => ({
+        restoreVersion: async (payload) => ({
             ok: true,
             value: {
                 path: '/tmp/AGENTS.md',
@@ -95,14 +96,38 @@ export async function evaluateBundle({ mount } = {}) {
                 versionPath: `/tmp/AGENTS.md.bak-${payload.id}`,
             },
         }),
-        remove: async (payload) => ({ ok: true, value: { id: payload.id, path: `/tmp/AGENTS.md.bak-${payload.id}` } }),
+        deleteVersion: async (payload) => ({ ok: true, value: { id: payload.id, path: `/tmp/AGENTS.md.bak-${payload.id}` } }),
     }
     // 记录每个方法的调用入参，用来验证代理没有丢参数或改形状。
-    for (const method of ['read', 'save', 'list', 'readVersion', 'restore', 'remove']) {
+    for (const method of ['read', 'save', 'listVersions', 'readVersion', 'restoreVersion', 'deleteVersion']) {
         const original = namespace[method]
         namespace[method] = async (payload) => {
             records.calls.push({ method, payload })
             return original(payload)
+        }
+    }
+
+    /**
+     * 照着真实网关的挂载前校验走一遍：方法名不得撞命名空间服务自身成员、
+     * 入参必须带 strict codec、同一命名空间不得重复声明同一方法。
+     * 真网关这些检查任何一条不过都会**整组回滚**，所以这里也必须抛。
+     * @param contribution - 客户端贡献（`CONTRIBUTION`）。
+     */
+    const validateContribution = (contribution) => {
+        const seen = new Map()
+        for (const descriptor of contribution.descriptors) {
+            assertMethodAvailable(descriptor.namespace, descriptor.method)
+            const methods = seen.get(descriptor.namespace) ?? new Set()
+            if (methods.has(descriptor.method)) {
+                throw new Error(`client api: contribution repeats direct method ${descriptor.namespace}/${descriptor.method}`)
+            }
+            methods.add(descriptor.method)
+            seen.set(descriptor.namespace, methods)
+            for (const parameter of descriptor.parameters) {
+                if (parameter.codec?.mode !== 'strict') {
+                    throw new Error(`client api: generated Remote ${descriptor.namespace}/${descriptor.method} field ${JSON.stringify(parameter.wire)} has no strict codec`)
+                }
+            }
         }
     }
 
@@ -122,6 +147,7 @@ export async function evaluateBundle({ mount } = {}) {
             if (key === 'remote') {
                 return {
                     $mount: mount ?? (async (contribution) => {
+                        validateContribution(contribution)
                         records.mounted.push(contribution)
                         namespaceInstalled = true
                         return () => {}
